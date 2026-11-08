@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>People's Daily USA Mentions</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb;
+    --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10);
+    --s1: #2a78d6; --ctx: #b3b2aa; --wash: rgba(11,11,11,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19;
+      --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+      --s1: #3987e5; --ctx: #5d5c58; --wash: rgba(255,255,255,.06);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19;
+    --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+    --s1: #3987e5; --ctx: #5d5c58; --wash: rgba(255,255,255,.06);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1120px; margin: 0 auto; padding: 28px 16px 56px; }
+  h1 { font-size: 24px; margin: 0 0 4px; font-weight: 650; letter-spacing: -.01em; }
+  h2 { font-size: 16px; margin: 0; font-weight: 600; }
+  .sub { color: var(--ink2); margin: 0 0 20px; }
+  .muted { color: var(--muted); }
+
+  .filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 16px; }
+  .filters .lbl { color: var(--ink2); font-size: 13px; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+  .seg button {
+    font: inherit; font-size: 13px; color: var(--ink2); background: transparent; border: 0;
+    padding: 6px 12px; cursor: pointer; border-right: 1px solid var(--border);
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button:hover { background: var(--wash); }
+  .seg button[aria-pressed="true"] { color: var(--ink); font-weight: 600; background: var(--wash); box-shadow: inset 0 -2px 0 var(--s1); }
+  button:focus-visible, summary:focus-visible, svg:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+
+  .kpis { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+  .tile, .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+  .tile { padding: 14px 16px; }
+  .tile .k { color: var(--ink2); font-size: 13px; }
+  .tile .v { font-size: 26px; font-weight: 600; margin-top: 2px; }
+  .tile .n { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .tile.hero .v { font-size: 56px; line-height: 1.1; font-weight: 650; letter-spacing: -.02em; }
+  .card { padding: 16px; margin-bottom: 16px; }
+  .card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 8px 16px; margin-bottom: 8px; }
+  .card-head p { margin: 2px 0 0; color: var(--ink2); font-size: 13px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 4px 0 4px; font-size: 13px; color: var(--ink2); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
+
+  .chart { position: relative; width: 100%; }
+  .chart svg { display: block; width: 100%; overflow: visible; }
+  .tip {
+    position: absolute; pointer-events: none; z-index: 2; min-width: 150px; max-width: 320px;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none;
+  }
+  .tip .t { color: var(--ink2); margin-bottom: 4px; }
+  .tip .r { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+  .tip .r i { width: 12px; height: 2px; flex: none; border-radius: 1px; }
+  .tip .r b { font-weight: 650; font-size: 13px; }
+  .tip .r span { color: var(--ink2); }
+  .tip .evh { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--grid); }
+  .tip .ev { margin-top: 4px; color: var(--ink2); }
+  .tip .ev b { color: var(--ink); }
+  .legend i.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink); }
+  th.desc { text-align: left; }
+  td.desc { white-space: normal; text-align: left; min-width: 320px; }
+  td.cat, th.cat { text-align: center; }
+  tr.off td { color: var(--muted); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px 20px; }
+  .facet h3 { font-size: 14px; margin: 0; font-weight: 600; }
+  .facet .zh { color: var(--muted); font-size: 12px; }
+  .facet .pk { color: var(--ink2); font-size: 12px; margin: 2px 0 2px; }
+
+  details { margin-top: 4px; }
+  summary { cursor: pointer; color: var(--ink2); padding: 6px 0; font-size: 13px; }
+  .tablewrap { max-height: 360px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 5px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--grid); }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { position: sticky; top: 0; background: var(--surface); color: var(--ink2); font-weight: 600; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 12px; }
+
+  @media (max-width: 760px) {
+    .kpis { grid-template-columns: 1fr 1fr; }
+    .tile.hero { grid-column: 1 / -1; }
+    .tile.hero .v { font-size: 48px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>How often does People's Daily mention the USA?</h1>
+  <p class="sub" id="sub"></p>
+
+  <div class="filters" role="group" aria-label="Date range">
+    <span class="lbl">Date range</span>
+    <div class="seg" id="range"></div>
+  </div>
+
+  <section class="kpis" id="kpis" aria-label="Summary for the selected range"></section>
+
+  <section class="card" aria-labelledby="h-main">
+    <div class="card-head">
+      <div>
+        <h2 id="h-main">USA-related coverage over time</h2>
+        <p id="main-desc"></p>
+      </div>
+      <div class="seg" id="metric" role="group" aria-label="Metric"></div>
+    </div>
+    <div class="legend" id="main-legend"></div>
+    <div class="chart" id="main-chart"></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-evt">
+    <div class="card-head">
+      <div>
+        <h2 id="h-evt">Sanctions-related events</h2>
+        <p id="evt-desc"></p>
+      </div>
+    </div>
+    <div class="tablewrap"><table id="evt-tbl"></table></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-ent">
+    <div class="card-head">
+      <div>
+        <h2 id="h-ent">Named people and institutions</h2>
+        <p>Articles per month mentioning each entity. Each chart has its own vertical scale.</p>
+      </div>
+    </div>
+    <div class="grid" id="facets"></div>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Table view of the selected range</summary>
+      <div class="tablewrap"><table id="tbl"></table></div>
+    </details>
+  </section>
+
+  <p class="note">
+    Source: People's Daily (人民日报) via Papersnake/people_daily_news; Chinese-language keyword matching
+    (aliases and English translations in <code>docs/entity_aliases.csv</code>). An article counts once per entity
+    however many times it is mentioned; entity groups overlap (e.g. "美国总统奥巴马" counts for the USA,
+    President and Obama). Keyword counts measure attention, not tone.
+  </p>
+</main>
+
+<script>
+const D = __DATA__;
+const EV = __EVENTS__;
+const W = 3; // moving-average window, in months
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const fmtMonth = m => MON[+m.slice(5) - 1] + ' ' + m.slice(0, 4);
+const nf = new Intl.NumberFormat('en');
+const N = D.month.length;
+const sum = (a, i, j) => { let s = 0; for (let k = i; k < j; k++) s += a[k]; return s; };
+
+const METRICS = {
+  share: {
+    name: 'Share (any entity)', desc: 'Percentage of articles in a month that mention the USA or any tracked entity (USA aliases, president, Obama, Trump, Biden, Bush, Congress, Fed).',
+    val: i => D.articles_any_usa[i] / D.articles_total[i] * 100,
+    roll: i => sum(D.articles_any_usa, i - (W - 1), i + 1) / sum(D.articles_total, i - (W - 1), i + 1) * 100,
+    fmt: v => v.toFixed(1) + '%', tick: v => v + '%',
+  },
+  articles: {
+    name: 'Articles', desc: 'Number of articles per month that mention the USA (any alias).',
+    val: i => D.articles_any_usa[i],
+    roll: i => sum(D.articles_any_usa, i - (W - 1), i + 1) / W,
+    fmt: v => nf.format(Math.round(v)), tick: v => nf.format(v),
+  },
+  alias: {
+    name: 'Share (USA aliases)', desc: 'Percentage of articles in a month that mention at least one USA alias (美国, 美方, 中美, 美媒, …), excluding named people and institutions.',
+    val: i => D.share_alias_mentions[i] * 100,
+    roll: i => sum(D.articles_usa, i - (W - 1), i + 1) / sum(D.articles_total, i - (W - 1), i + 1) * 100,
+    fmt: v => v.toFixed(1) + '%', tick: v => v + '%',
+  },
+  mentions: {
+    name: 'Raw mentions', desc: 'Total occurrences of USA aliases per month (an article can mention the USA many times).',
+    val: i => D.mentions_usa[i],
+    roll: i => sum(D.mentions_usa, i - (W - 1), i + 1) / W,
+    fmt: v => nf.format(Math.round(v)), tick: v => nf.format(v),
+  },
+};
+const ENTITIES = [
+  { key: 'president', label: 'US President / White House', zh: '美国总统, 白宫' },
+  { key: 'obama', label: 'Obama', zh: '奥巴马' },
+  { key: 'trump', label: 'Trump', zh: '特朗普, 川普' },
+  { key: 'biden', label: 'Biden', zh: '拜登' },
+  { key: 'congress', label: 'US Congress', zh: '美国国会, 美参议院, 美众议院, 国会山' },
+  { key: 'fed', label: 'Federal Reserve', zh: '美联储' },
+];
+const EVENTS = [
+  { month: '2017-01', label: 'Trump takes office' },
+  { month: '2021-01', label: 'Biden takes office' },
+  { month: '2025-01', label: 'Trump 2nd term' },
+];
+const RANGES = [
+  { id: 'all', label: 'All years', start: 0 },
+  { id: '10', label: 'Last 10 years', start: Math.max(0, N - 120) },
+  { id: '5', label: 'Last 5 years', start: Math.max(0, N - 60) },
+  { id: '3', label: 'Last 3 years', start: Math.max(0, N - 36) },
+];
+const state = { range: 'all', metric: 'share' };
+const i0 = () => RANGES.find(r => r.id === state.range).start;
+
+// ---------- helpers ----------
+const SVGNS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs = {}, parent, text) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function h(tag, props = {}, text) {
+  const e = document.createElement(tag);
+  Object.assign(e, props);
+  if (text != null) e.textContent = text;
+  return e;
+}
+function niceTicks(max, n) {
+  if (max <= 0) return [0, 1];
+  const raw = max / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(c => c * mag).find(s => s >= raw);
+  const out = [];
+  for (let v = 0; v < max + step * 0.999; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+
+// ---------- generic line chart ----------
+function lineChart(host, cfg) {
+  host.replaceChildren();
+  const W = host.clientWidth || 600, H = cfg.height;
+  const m = { l: cfg.ml || 44, r: cfg.mr || 12, t: 12, b: 26 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const n = cfg.months.length;
+  let max = 0;
+  cfg.series.forEach(s => s.vals.forEach(v => { if (v != null && v > max) max = v; }));
+  const ticks = niceTicks(max, cfg.ticks || 4);
+  const top = ticks[ticks.length - 1];
+  const X = i => m.l + (n === 1 ? pw / 2 : i * pw / (n - 1));
+  const Y = v => m.t + ph - v / top * ph;
+
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', tabindex: 0,
+    'aria-label': cfg.aria }, host);
+
+  ticks.forEach(t => {
+    el('line', { x1: m.l, x2: W - m.r, y1: Y(t), y2: Y(t), stroke: t === 0 ? 'var(--axis)' : 'var(--grid)', 'stroke-width': 1 }, svg);
+    el('text', { x: m.l - 8, y: Y(t) + 4, 'text-anchor': 'end', 'font-size': 11, fill: 'var(--muted)' }, svg, cfg.tickFmt(t));
+  });
+  const years = Math.ceil(n / 12), step = Math.max(1, Math.ceil(years * 44 / pw));
+  cfg.months.forEach((mo, i) => {
+    if (mo.slice(5) === '01' && (+mo.slice(0, 4)) % step === 0) {
+      el('text', { x: X(i), y: H - 6, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--muted)' }, svg, mo.slice(0, 4));
+    }
+  });
+
+  (cfg.events || []).forEach(ev => {
+    const i = cfg.months.indexOf(ev.month);
+    if (i < 0) return;
+    el('line', { x1: X(i), x2: X(i), y1: m.t, y2: m.t + ph, stroke: 'var(--axis)', 'stroke-width': 1 }, svg);
+    const left = X(i) > W - m.r - 120;
+    el('text', { x: X(i) + (left ? -4 : 4), y: m.t + ph - 6, 'text-anchor': left ? 'end' : 'start',
+      'font-size': 11, fill: 'var(--muted)' }, svg, ev.label);
+  });
+
+  (cfg.markers || []).forEach(mk => {
+    const i = cfg.months.indexOf(mk.month);
+    if (i < 0) return;
+    el('line', { x1: X(i), x2: X(i), y1: m.t, y2: m.t + ph, stroke: 'var(--muted)', 'stroke-width': 1, opacity: .55 }, svg);
+  });
+
+  cfg.series.forEach((s, si) => {
+    let d = '', started = false, first = null, last = null;
+    s.vals.forEach((v, i) => {
+      if (v == null) { started = false; return; }
+      d += (started ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1);
+      started = true; if (first == null) first = i; last = i;
+    });
+    if (cfg.area && si === 0 && first != null) {
+      el('path', { d: d + `L${X(last).toFixed(1)} ${Y(0)}L${X(first).toFixed(1)} ${Y(0)}Z`, fill: s.color, opacity: .10 }, svg);
+    }
+    el('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg);
+    if (s.endDot && last != null) {
+      el('circle', { cx: X(last), cy: Y(s.vals[last]), r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2 }, svg);
+      if (s.endLabel) el('text', { x: X(last) + 9, y: Y(s.vals[last]) + 4, 'font-size': 12, 'font-weight': 600, fill: 'var(--ink)' }, svg, cfg.fmt(s.vals[last]));
+    }
+  });
+
+  if (cfg.peakSeries != null) {
+    const s = cfg.series[cfg.peakSeries];
+    let pi = 0; s.vals.forEach((v, i) => { if (v != null && v > s.vals[pi]) pi = i; });
+    el('circle', { cx: X(pi), cy: Y(s.vals[pi]), r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2 }, svg);
+    if (cfg.peakLabel) {
+      const x = X(pi), anchor = x > W - m.r - 110 ? 'end' : x < m.l + 110 ? 'start' : 'middle';
+      el('text', { x, y: Y(s.vals[pi]) - 9, 'text-anchor': anchor, 'font-size': 12, 'font-weight': 600, fill: 'var(--ink)' },
+        svg, `${cfg.fmt(s.vals[pi])} · ${fmtMonth(cfg.months[pi])}`);
+    }
+  }
+
+  // event dots on the baseline
+  (cfg.markers || []).forEach(mk => {
+    const i = cfg.months.indexOf(mk.month);
+    if (i < 0) return;
+    el('circle', { cx: X(i), cy: Y(0), r: 4, fill: 'var(--ink)', stroke: 'var(--surface)', 'stroke-width': 2 }, svg);
+  });
+
+  // hover layer
+  const cross = el('line', { y1: m.t, y2: m.t + ph, stroke: 'var(--muted)', 'stroke-width': 1, visibility: 'hidden' }, svg);
+  const dots = cfg.series.map(s => el('circle', { r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2, visibility: 'hidden' }, svg));
+  const tip = h('div', { className: 'tip' }); host.appendChild(tip);
+  let cur = null;
+  function show(i) {
+    cur = i;
+    cross.setAttribute('x1', X(i)); cross.setAttribute('x2', X(i)); cross.setAttribute('visibility', 'visible');
+    tip.replaceChildren(h('div', { className: 't' }, fmtMonth(cfg.months[i])));
+    cfg.series.forEach((s, si) => {
+      const v = s.vals[i];
+      if (v == null) { dots[si].setAttribute('visibility', 'hidden'); return; }
+      dots[si].setAttribute('cx', X(i)); dots[si].setAttribute('cy', Y(v)); dots[si].setAttribute('visibility', 'visible');
+      const row = h('div', { className: 'r' });
+      const key = h('i'); key.style.background = s.color;
+      row.append(key, h('b', {}, cfg.fmt(v)), h('span', {}, s.name));
+      tip.appendChild(row);
+    });
+    const evs = (cfg.eventsAt || {})[cfg.months[i]];
+    if (evs) {
+      tip.appendChild(h('div', { className: 't evh' }, evs.length > 1 ? `${evs.length} events this month` : 'Event this month'));
+      evs.forEach(ev => {
+        const d = h('div', { className: 'ev' });
+        d.append(h('b', {}, `${ev.date} · ${ev.category}: `), document.createTextNode(ev.description));
+        tip.appendChild(d);
+      });
+    }
+    tip.style.display = 'block';
+    tip.style.left = '0px';
+    const w = tip.offsetWidth, x = X(i);
+    tip.style.left = (x + 14 + w > W ? x - 14 - w : x + 14) + 'px';
+    tip.style.top = (m.t + 4) + 'px';
+  }
+  function hide() { cur = null; cross.setAttribute('visibility', 'hidden'); dots.forEach(d => d.setAttribute('visibility', 'hidden')); tip.style.display = 'none'; }
+  const idxAt = e => {
+    const r = svg.getBoundingClientRect();
+    const x = (e.clientX - r.left) * (W / r.width);
+    return Math.max(0, Math.min(n - 1, Math.round((x - m.l) / pw * (n - 1))));
+  };
+  svg.addEventListener('pointermove', e => show(idxAt(e)));
+  svg.addEventListener('pointerleave', hide);
+  svg.addEventListener('blur', hide);
+  svg.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      const base = cur == null ? n - 1 : cur;
+      show(Math.max(0, Math.min(n - 1, base + (e.key === 'ArrowRight' ? 1 : -1))));
+    } else if (e.key === 'Escape') hide();
+  });
+}
+
+// ---------- render ----------
+const redraws = [];
+function renderAll() {
+  const a = i0(), months = D.month.slice(a), M = METRICS[state.metric];
+
+  // header + KPIs
+  document.getElementById('sub').textContent =
+    `${fmtMonth(months[0])} – ${fmtMonth(months[months.length - 1])} · ${nf.format(sum(D.articles_total, a, N))} articles`;
+  const totalArt = sum(D.articles_total, a, N), anyArt = sum(D.articles_any_usa, a, N);
+  let pk = a, pkv = -1;
+  for (let i = a; i < N; i++) { const v = D.articles_any_usa[i] / D.articles_total[i]; if (v > pkv) { pkv = v; pk = i; } }
+  const kp = document.getElementById('kpis'); kp.replaceChildren();
+  [
+    { cls: 'hero', k: 'of articles mention the USA', v: (anyArt / totalArt * 100).toFixed(1) + '%', n: 'Any tracked entity, selected range' },
+    { k: 'Articles mentioning the USA', v: nf.format(anyArt), n: `of ${nf.format(totalArt)} published` },
+    { k: 'Raw alias mentions', v: nf.format(sum(D.mentions_usa, a, N)), n: 'Occurrences of USA aliases' },
+    { k: 'Peak month', v: fmtMonth(D.month[pk]), n: (pkv * 100).toFixed(1) + '% of articles' },
+  ].forEach(t => {
+    const d = h('div', { className: 'tile ' + (t.cls || '') });
+    d.append(h('div', { className: 'k' }, t.k), h('div', { className: 'v' }, t.v), h('div', { className: 'n' }, t.n));
+    kp.appendChild(d);
+  });
+
+  document.getElementById('main-desc').textContent = M.desc;
+  const lg = document.getElementById('main-legend'); lg.replaceChildren();
+  [['Monthly', 'var(--ctx)'], ['3-month average', 'var(--s1)']].forEach(([name, c]) => {
+    const s = h('span'); const i = h('i'); i.style.background = c; s.append(i, name); lg.appendChild(s);
+  });
+  const es = h('span'); es.append(h('i', { className: 'dot' }), 'Sanctions-related event (hover the month for details)'); lg.appendChild(es);
+
+  // events table
+  const startMonth = D.month[a], endMonth = D.month[N - 1];
+  const evs = EV.filter(e => e.date.slice(0, 7) >= startMonth);
+  const inData = evs.filter(e => e.date.slice(0, 7) <= endMonth).length;
+  document.getElementById('evt-desc').textContent =
+    `${inData} events in the selected range (marked on the chart above).` +
+    (evs.length > inData ? ` ${evs.length - inData} later events fall after the data ends in ${fmtMonth(endMonth)} and are listed in grey.` : '');
+  const et = document.getElementById('evt-tbl'); et.replaceChildren();
+  const eh = h('thead'), er = h('tr');
+  [['Date', ''], ['Cat.', 'cat'], ['Event', 'desc']].forEach(([t, c]) => er.appendChild(h('th', { className: c }, t)));
+  eh.appendChild(er);
+  const eb = h('tbody');
+  evs.forEach(e => {
+    const tr = h('tr', { className: e.date.slice(0, 7) > endMonth ? 'off' : '' });
+    tr.append(h('td', {}, e.date), h('td', { className: 'cat' }, e.category), h('td', { className: 'desc' }, e.description));
+    eb.appendChild(tr);
+  });
+  et.append(eh, eb);
+
+  // table
+  const cols = [['Month', i => fmtMonth(D.month[i])], ['Articles', i => nf.format(D.articles_total[i])],
+    ['Mention USA', i => nf.format(D.articles_any_usa[i])], ['Share', i => (D.articles_any_usa[i] / D.articles_total[i] * 100).toFixed(1) + '%'],
+    ['Alias mentions', i => nf.format(D.mentions_usa[i])],
+    ...ENTITIES.map(e => [e.label, i => nf.format(D['articles_' + e.key][i])])];
+  const tbl = document.getElementById('tbl'); tbl.replaceChildren();
+  const thead = h('thead'), hr = h('tr'); cols.forEach(c => hr.appendChild(h('th', {}, c[0]))); thead.appendChild(hr);
+  const tb = h('tbody');
+  for (let i = N - 1; i >= a; i--) { const tr = h('tr'); cols.forEach(c => tr.appendChild(h('td', {}, c[1](i)))); tb.appendChild(tr); }
+  tbl.append(thead, tb);
+
+  drawCharts();
+}
+function drawCharts() {
+  const a = i0(), months = D.month.slice(a), M = METRICS[state.metric];
+  const monthly = [], avg = [];
+  for (let i = a; i < N; i++) { monthly.push(M.val(i)); avg.push(i >= W - 1 ? M.roll(i) : null); }
+  const eventsAt = {};
+  EV.forEach(e => { (eventsAt[e.date.slice(0, 7)] = eventsAt[e.date.slice(0, 7)] || []).push(e); });
+  lineChart(document.getElementById('main-chart'), {
+    months, height: 340, mr: 56, fmt: M.fmt, tickFmt: M.tick, events: EVENTS, peakSeries: 0, peakLabel: true,
+    markers: EV.map(e => ({ month: e.date.slice(0, 7) })), eventsAt,
+    aria: `${M.name} per month, ${fmtMonth(months[0])} to ${fmtMonth(months[months.length - 1])}. Use left and right arrow keys to read values.`,
+    series: [
+      { name: 'Monthly', color: 'var(--ctx)', vals: monthly },
+      { name: '3-month average', color: 'var(--s1)', vals: avg, endDot: true, endLabel: true },
+    ],
+  });
+  const fc = document.getElementById('facets');
+  if (!fc.children.length) {
+    ENTITIES.forEach(e => {
+      const f = h('div', { className: 'facet' });
+      const head = h('h3', {}, e.label); head.appendChild(h('span', { className: 'zh' }, '  ' + e.zh));
+      f.append(head, h('div', { className: 'pk', id: 'pk-' + e.key }), h('div', { className: 'chart', id: 'fc-' + e.key }));
+      fc.appendChild(f);
+    });
+  }
+  ENTITIES.forEach(e => {
+    const vals = D['articles_' + e.key].slice(a);
+    let pi = 0; vals.forEach((v, i) => { if (v > vals[pi]) pi = i; });
+    document.getElementById('pk-' + e.key).textContent =
+      vals[pi] > 0 ? `Peak ${nf.format(vals[pi])} articles in ${fmtMonth(months[pi])} · ${nf.format(vals.reduce((x, y) => x + y, 0))} total` : 'No mentions in range';
+    lineChart(document.getElementById('fc-' + e.key), {
+      months, height: 150, ticks: 2, ml: 36, fmt: v => nf.format(v) + ' articles', tickFmt: v => nf.format(v), area: true, peakSeries: 0,
+      aria: `${e.label}: articles per month mentioning it.`,
+      series: [{ name: e.label, color: 'var(--s1)', vals, endDot: true }],
+    });
+  });
+}
+
+function buildControls() {
+  const r = document.getElementById('range');
+  RANGES.forEach(x => {
+    const b = h('button', { type: 'button' }, x.label);
+    b.setAttribute('aria-pressed', x.id === state.range);
+    b.onclick = () => { state.range = x.id; [...r.children].forEach((c, i) => c.setAttribute('aria-pressed', RANGES[i].id === x.id)); renderAll(); };
+    r.appendChild(b);
+  });
+  const mt = document.getElementById('metric');
+  Object.entries(METRICS).forEach(([k, v]) => {
+    const b = h('button', { type: 'button' }, v.name);
+    b.setAttribute('aria-pressed', k === state.metric);
+    b.onclick = () => { state.metric = k; [...mt.children].forEach((c, i) => c.setAttribute('aria-pressed', Object.keys(METRICS)[i] === k)); renderAll(); };
+    mt.appendChild(b);
+  });
+}
+buildControls();
+renderAll();
+let rz; new ResizeObserver(() => { clearTimeout(rz); rz = setTimeout(drawCharts, 80); }).observe(document.querySelector('main'));
+</script>
+</body>
+</html>
