@@ -1,0 +1,56 @@
+﻿entity,pattern,english
+usa,美国(?![家际]),United States (lit. 'beautiful country'); also prefix of 美国务卿 etc.
+usa,美利坚(?:合众国)?,America / United States of America (formal transliteration)
+usa,合众国,the United States (lit. 'united states/republic')
+usa,山姆大叔,Uncle Sam
+usa,美帝(?:国主义)?,American imperialism / 'US imperialists' (pejorative)
+usa,美方,the US side / US party
+usa,美军,US military / US forces
+usa,美籍,of US nationality / American citizen
+usa,美裔,of American descent / Asian-American etc.
+usa,(?<![完精优赞健甜柔壮审甘])美政府,US government
+usa,(?<![完精优赞健甜柔壮审甘])美当局,US authorities
+usa,(?<![完精优赞健甜柔壮审甘])美(?:官员|高官),US officials / senior US officials
+usa,(?<![完精优赞健甜柔壮审甘])美议员,US lawmaker
+usa,(?<![完精优赞健甜柔壮审甘])美大选,US presidential election
+usa,(?<![完精优赞健甜柔壮审甘])美大使,US ambassador
+usa,(?<![完精优赞健甜柔壮审甘])美(?:学者|专家),US scholars / US experts
+usa,(?<![完精优赞健甜柔壮审甘])美媒,US media
+usa,(?<![完精优赞健甜柔壮审甘])美股,US stocks / US equity market
+usa,(?<![完精优赞健甜柔壮审甘])美债,US Treasuries / US debt
+usa,(?<![完精优赞健甜柔壮审甘])美财长,US Treasury Secretary
+usa,(?<![完精优赞健甜柔壮审甘])美财政部,US Treasury Department
+usa,(?<![完精优赞健甜柔壮审甘])美商务部,US Department of Commerce
+usa,(?<![完精优赞健甜柔壮审甘])美防长,US Secretary of Defense
+usa,(?<![完精优赞健甜柔壮审甘])美副总统,US Vice President
+usa,(?<![完精优赞健甜柔壮审甘])美司法部,US Department of Justice
+usa,(?<![完精优赞健甜柔壮审甘])美贸易代表,US Trade Representative (USTR)
+usa,(?<![完精优赞健甜柔壮审甘])美(?:海军|空军|陆军),US Navy / Air Force / Army
+usa,(?<![完精优赞健甜柔壮审甘])美战机,US warplanes
+usa,(?<![完精优赞健甜柔壮审甘])美航母,US aircraft carrier
+usa,(?<![完精优赞健甜柔壮审甘])美(?:航天局|宇航局),NASA (US space agency)
+usa,(?<![完精优赞健甜柔壮审甘])美中情局,CIA (US Central Intelligence Agency)
+usa,(?<![完精优赞健甜柔壮审甘])美联邦调查局,FBI (US Federal Bureau of Investigation)
+usa,华盛顿(?!州),"Washington (the US capital / US government), excl. Washington State"
+usa,五角大楼,the Pentagon (US Department of Defense)
+usa,中美(?!洲),"China-US (excl. 中美洲, Central America)"
+usa,美中(?!不足),"US-China (excl. idiom 美中不足, 'a flaw in something good')"
+usa,美俄|俄美,US-Russia / Russia-US
+usa,美欧,US-Europe
+usa,美韩|韩美,US-South Korea / South Korea-US
+usa,(?<![完精优赞健甜柔壮审甘])(?:访美|赴美|驻美|旅美|留美|输美|抵美)(?![好丽化术食景德元金誉容学感]),visit/go to/be stationed in/travel in/study in/export to/arrive in the US
+usa,对美(?=国|方|出口|贸易|关系|政策|制裁|军售|投资|顺差|逆差|谈判|战略|外交),"toward / with respect to the US (e.g. exports, trade, policy)"
+usa,在美(?=上市|企业|留学|华人|华侨|投资|工作|生活|举行|发表|访问),"in the US (e.g. listed in, studying in, held in)"
+usa,(?<![A-Za-z])(?:U\.S\.A?\.?|USA|US|United States|America|American)(?![A-Za-z]),"Latin-script forms: U.S., USA, US, United States, America, American"
+president,美国总统|美总统,US President
+president,白宫,the White House
+obama,奥巴马,Obama
+trump,特朗普|川普,Trump (特朗普 standard; 川普 Taiwan/HK usage)
+biden,拜登,Biden
+bush,小布什|老布什|布什,Bush (George W. / George H. W. / unspecified)
+congress,美国国会|美国会(?![见议谈晤]),US Congress
+congress,美[国]?参议院|美参院,US Senate
+congress,美[国]?众议院|美众院,US House of Representatives
+congress,国会山,Capitol Hill
+fed,美联储,the Fed (US Federal Reserve)
+fed,联邦储备系统|联邦储备委员会|美国联邦储备,Federal Reserve System / Board of Governors

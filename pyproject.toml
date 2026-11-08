@@ -1,0 +1,10 @@
+[project]
+name = "gpr-currency"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "huggingface-hub>=2.4.0",
+    "pandas>=3.1.1",
+]
