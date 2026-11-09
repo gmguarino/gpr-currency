@@ -117,6 +117,10 @@
   <div class="filters" role="group" aria-label="Date range">
     <span class="lbl">Date range</span>
     <div class="seg" id="range"></div>
+    <span class="filters-g" style="display:contents">
+      <span class="lbl">Aggregation</span>
+      <div class="seg" id="gran" role="group" aria-label="Aggregation"></div>
+    </span>
   </div>
 
   <section class="kpis" id="kpis" aria-label="Summary for the selected range"></section>
@@ -147,7 +151,7 @@
     <div class="card-head">
       <div>
         <h2 id="h-ent">Named people and institutions</h2>
-        <p>Articles per month mentioning each entity. Each chart has its own vertical scale.</p>
+        <p id="ent-desc"></p>
       </div>
     </div>
     <div class="grid" id="facets"></div>
@@ -164,20 +168,39 @@
     Source: People's Daily (人民日报) via Papersnake/people_daily_news; Chinese-language keyword matching
     (aliases and English translations in <code>docs/entity_aliases.csv</code>). An article counts once per entity
     however many times it is mentioned; entity groups overlap (e.g. "美国总统奥巴马" counts for the USA,
-    President and Obama). Keyword counts measure attention, not tone.
+    President and Obama). Weekly periods start on Monday (the first and last weeks of the data are partial). Keyword counts measure attention, not tone; the sentiment views (when present) come from a language-model score of each article's excerpt around the mentions.
   </p>
 </main>
 
 <script>
-const D = __DATA__;
+const DATA = { month: __DATA__, week: __WEEKLY__ };  // week is null when no weekly CSV was built
+let D, N, W, UNIT, PER_YEAR;  // current granularity: data, period count, moving-average window, 'month'|'week'
+function setGran(g) {
+  UNIT = g; D = DATA[g]; D.p = g === 'month' ? D.month : D.week_start; N = D.p.length;
+  W = g === 'month' ? 3 : 4;  // moving-average window, in periods
+  PER_YEAR = g === 'month' ? 12 : 52;
+}
 const EV = __EVENTS__;
-const W = 3; // moving-average window, in months
 const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const fmtMonth = m => MON[+m.slice(5) - 1] + ' ' + m.slice(0, 4);
+const fmtPeriod = p => p.length === 7 ? MON[+p.slice(5) - 1] + ' ' + p.slice(0, 4)
+  : +p.slice(8) + ' ' + MON[+p.slice(5, 7) - 1] + ' ' + p.slice(0, 4);  // 'YYYY-MM' or a week's Monday 'YYYY-MM-DD'
+// the period (month 'YYYY-MM' or week-start Monday) that contains a date
+function periodOf(date) {
+  if (UNIT === 'month') return date.slice(0, 7);
+  const d = new Date(date + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7);
+  return d.toISOString().slice(0, 10);
+}
+// year a period belongs to (a week belongs to the year of its Thursday, as in ISO weeks)
+function labelYear(p) {
+  if (p.length === 7) return +p.slice(0, 4);
+  const d = new Date(p + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 3); return d.getUTCFullYear();
+}
 const nf = new Intl.NumberFormat('en');
-const N = D.month.length;
 const sum = (a, i, j) => { let s = 0; for (let k = i; k < j; k++) s += a[k]; return s; };
 
+const hasSent = () => 'mean_sentiment' in D;
+// sum over the rolling window of (monthly value x articles scored): weights each month by its article count
+const wsum = (vals, i) => { let s = 0; for (let k = i - (W - 1); k <= i; k++) s += vals[k] * D.articles_scored[k]; return s; };
 const METRICS = {
   share: {
     name: 'Share (any entity)', desc: 'Percentage of articles in a month that mention the USA or any tracked entity (USA aliases, president, Obama, Trump, Biden, Bush, Congress, Fed).',
@@ -197,13 +220,35 @@ const METRICS = {
     roll: i => sum(D.articles_usa, i - (W - 1), i + 1) / sum(D.articles_total, i - (W - 1), i + 1) * 100,
     fmt: v => v.toFixed(1) + '%', tick: v => v + '%',
   },
+  ...{
+    sentiment: {
+      avail: hasSent, name: 'Sentiment (1–5)', domain: [1, 5], domainTicks: [1, 2, 3, 4, 5],
+      desc: 'Average tone towards the USA of the month\'s USA-mentioning articles, scored by a Qwen model from 1 (completely negative) to 5 (completely positive); 3 is neutral. Scores come from an excerpt around the mentions and are model estimates, not ground truth.',
+      val: i => D.mean_sentiment[i],
+      roll: i => wsum(D.mean_sentiment, i) / sum(D.articles_scored, i - (W - 1), i + 1),
+      fmt: v => v.toFixed(2), tick: v => v,
+    },
+    negative: {
+      avail: hasSent, name: 'Share negative', desc: 'Percentage of scored articles in a month with a score of 1 or 2 (negative towards the USA).',
+      val: i => D.share_negative[i] * 100,
+      roll: i => wsum(D.share_negative, i) / sum(D.articles_scored, i - (W - 1), i + 1) * 100,
+      fmt: v => v.toFixed(1) + '%', tick: v => v + '%',
+    },
+    positive: {
+      avail: hasSent, name: 'Share positive', desc: 'Percentage of scored articles in a month with a score of 4 or 5 (positive towards the USA).',
+      val: i => D.share_positive[i] * 100,
+      roll: i => wsum(D.share_positive, i) / sum(D.articles_scored, i - (W - 1), i + 1) * 100,
+      fmt: v => v.toFixed(1) + '%', tick: v => v + '%',
+    },
+  },
   mentions: {
-    name: 'Raw mentions', desc: 'Total occurrences of USA aliases per month (an article can mention the USA many times).',
+    avail: () => 'mentions_usa' in D, name: 'Raw mentions', desc: 'Total occurrences of USA aliases per month (an article can mention the USA many times).',
     val: i => D.mentions_usa[i],
     roll: i => sum(D.mentions_usa, i - (W - 1), i + 1) / W,
     fmt: v => nf.format(Math.round(v)), tick: v => nf.format(v),
   },
 };
+const metricKeys = () => Object.keys(METRICS).filter(k => !METRICS[k].avail || METRICS[k].avail());
 const ENTITIES = [
   { key: 'president', label: 'US President / White House', zh: '美国总统, 白宫' },
   { key: 'obama', label: 'Obama', zh: '奥巴马' },
@@ -212,19 +257,19 @@ const ENTITIES = [
   { key: 'congress', label: 'US Congress', zh: '美国国会, 美参议院, 美众议院, 国会山' },
   { key: 'fed', label: 'Federal Reserve', zh: '美联储' },
 ];
-const EVENTS = [
-  { month: '2017-01', label: 'Trump takes office' },
-  { month: '2021-01', label: 'Biden takes office' },
-  { month: '2025-01', label: 'Trump 2nd term' },
+const TERMS = [
+  { date: '2017-01-20', label: 'Trump takes office' },
+  { date: '2021-01-20', label: 'Biden takes office' },
+  { date: '2025-01-20', label: 'Trump 2nd term' },
 ];
 const RANGES = [
-  { id: 'all', label: 'All years', start: 0 },
-  { id: '10', label: 'Last 10 years', start: Math.max(0, N - 120) },
-  { id: '5', label: 'Last 5 years', start: Math.max(0, N - 60) },
-  { id: '3', label: 'Last 3 years', start: Math.max(0, N - 36) },
+  { id: 'all', label: 'All years', years: null },
+  { id: '10', label: 'Last 10 years', years: 10 },
+  { id: '5', label: 'Last 5 years', years: 5 },
+  { id: '3', label: 'Last 3 years', years: 3 },
 ];
-const state = { range: 'all', metric: 'share' };
-const i0 = () => RANGES.find(r => r.id === state.range).start;
+const state = { range: 'all', metric: 'share', gran: 'month' };
+const i0 = () => { const y = RANGES.find(r => r.id === state.range).years; return y == null ? 0 : Math.max(0, N - Math.round(y * PER_YEAR)); };
 
 // ---------- helpers ----------
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -259,22 +304,25 @@ function lineChart(host, cfg) {
   const n = cfg.months.length;
   let max = 0;
   cfg.series.forEach(s => s.vals.forEach(v => { if (v != null && v > max) max = v; }));
-  const ticks = niceTicks(max, cfg.ticks || 4);
+  const lo = cfg.domain ? cfg.domain[0] : 0;  // fixed domain (e.g. 1-5 sentiment) or zero-based
+  const ticks = cfg.domain ? cfg.domainTicks : niceTicks(max, cfg.ticks || 4);
   const top = ticks[ticks.length - 1];
   const X = i => m.l + (n === 1 ? pw / 2 : i * pw / (n - 1));
-  const Y = v => m.t + ph - v / top * ph;
+  const Y = v => m.t + ph - (v - lo) / (top - lo) * ph;
 
   const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', tabindex: 0,
     'aria-label': cfg.aria }, host);
 
   ticks.forEach(t => {
-    el('line', { x1: m.l, x2: W - m.r, y1: Y(t), y2: Y(t), stroke: t === 0 ? 'var(--axis)' : 'var(--grid)', 'stroke-width': 1 }, svg);
+    el('line', { x1: m.l, x2: W - m.r, y1: Y(t), y2: Y(t), stroke: t === lo ? 'var(--axis)' : 'var(--grid)', 'stroke-width': 1 }, svg);
     el('text', { x: m.l - 8, y: Y(t) + 4, 'text-anchor': 'end', 'font-size': 11, fill: 'var(--muted)' }, svg, cfg.tickFmt(t));
   });
-  const years = Math.ceil(n / 12), step = Math.max(1, Math.ceil(years * 44 / pw));
-  cfg.months.forEach((mo, i) => {
-    if (mo.slice(5) === '01' && (+mo.slice(0, 4)) % step === 0) {
-      el('text', { x: X(i), y: H - 6, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--muted)' }, svg, mo.slice(0, 4));
+  const years = Math.ceil(n / PER_YEAR), step = Math.max(1, Math.ceil(years * 44 / pw));
+  cfg.months.forEach((mo, i) => {  // a year label where the year changes (or the range starts in January)
+    const y = labelYear(mo);
+    const starts = i > 0 ? y !== labelYear(cfg.months[i - 1]) : y === +mo.slice(0, 4) && mo.slice(5, 7) === '01';
+    if (starts && y % step === 0) {
+      el('text', { x: X(i), y: H - 6, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--muted)' }, svg, String(y));
     }
   });
 
@@ -301,7 +349,7 @@ function lineChart(host, cfg) {
       started = true; if (first == null) first = i; last = i;
     });
     if (cfg.area && si === 0 && first != null) {
-      el('path', { d: d + `L${X(last).toFixed(1)} ${Y(0)}L${X(first).toFixed(1)} ${Y(0)}Z`, fill: s.color, opacity: .10 }, svg);
+      el('path', { d: d + `L${X(last).toFixed(1)} ${Y(lo)}L${X(first).toFixed(1)} ${Y(lo)}Z`, fill: s.color, opacity: .10 }, svg);
     }
     el('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg);
     if (s.endDot && last != null) {
@@ -317,7 +365,7 @@ function lineChart(host, cfg) {
     if (cfg.peakLabel) {
       const x = X(pi), anchor = x > W - m.r - 110 ? 'end' : x < m.l + 110 ? 'start' : 'middle';
       el('text', { x, y: Y(s.vals[pi]) - 9, 'text-anchor': anchor, 'font-size': 12, 'font-weight': 600, fill: 'var(--ink)' },
-        svg, `${cfg.fmt(s.vals[pi])} · ${fmtMonth(cfg.months[pi])}`);
+        svg, `${cfg.fmt(s.vals[pi])} · ${fmtPeriod(cfg.months[pi])}`);
     }
   }
 
@@ -325,7 +373,7 @@ function lineChart(host, cfg) {
   (cfg.markers || []).forEach(mk => {
     const i = cfg.months.indexOf(mk.month);
     if (i < 0) return;
-    el('circle', { cx: X(i), cy: Y(0), r: 4, fill: 'var(--ink)', stroke: 'var(--surface)', 'stroke-width': 2 }, svg);
+    el('circle', { cx: X(i), cy: Y(lo), r: 4, fill: 'var(--ink)', stroke: 'var(--surface)', 'stroke-width': 2 }, svg);
   });
 
   // hover layer
@@ -336,7 +384,7 @@ function lineChart(host, cfg) {
   function show(i) {
     cur = i;
     cross.setAttribute('x1', X(i)); cross.setAttribute('x2', X(i)); cross.setAttribute('visibility', 'visible');
-    tip.replaceChildren(h('div', { className: 't' }, fmtMonth(cfg.months[i])));
+    tip.replaceChildren(h('div', { className: 't' }, fmtPeriod(cfg.months[i])));
     cfg.series.forEach((s, si) => {
       const v = s.vals[i];
       if (v == null) { dots[si].setAttribute('visibility', 'hidden'); return; }
@@ -348,7 +396,7 @@ function lineChart(host, cfg) {
     });
     const evs = (cfg.eventsAt || {})[cfg.months[i]];
     if (evs) {
-      tip.appendChild(h('div', { className: 't evh' }, evs.length > 1 ? `${evs.length} events this month` : 'Event this month'));
+      tip.appendChild(h('div', { className: 't evh' }, evs.length > 1 ? `${evs.length} events this ${UNIT}` : `Event this ${UNIT}`));
       evs.forEach(ev => {
         const d = h('div', { className: 'ev' });
         d.append(h('b', {}, `${ev.date} · ${ev.category}: `), document.createTextNode(ev.description));
@@ -381,12 +429,17 @@ function lineChart(host, cfg) {
 
 // ---------- render ----------
 const redraws = [];
+function sentAvg(a) {
+  let s = 0, n = 0;
+  for (let i = a; i < N; i++) { s += D.mean_sentiment[i] * D.articles_scored[i]; n += D.articles_scored[i]; }
+  return s / n;
+}
 function renderAll() {
-  const a = i0(), months = D.month.slice(a), M = METRICS[state.metric];
+  const a = i0(), months = D.p.slice(a), M = METRICS[state.metric];
 
   // header + KPIs
   document.getElementById('sub').textContent =
-    `${fmtMonth(months[0])} – ${fmtMonth(months[months.length - 1])} · ${nf.format(sum(D.articles_total, a, N))} articles`;
+    `${fmtPeriod(months[0])} – ${fmtPeriod(months[months.length - 1])} · ${nf.format(sum(D.articles_total, a, N))} articles · ${UNIT === 'month' ? 'monthly' : 'weekly'} view`;
   const totalArt = sum(D.articles_total, a, N), anyArt = sum(D.articles_any_usa, a, N);
   let pk = a, pkv = -1;
   for (let i = a; i < N; i++) { const v = D.articles_any_usa[i] / D.articles_total[i]; if (v > pkv) { pkv = v; pk = i; } }
@@ -394,44 +447,49 @@ function renderAll() {
   [
     { cls: 'hero', k: 'of articles mention the USA', v: (anyArt / totalArt * 100).toFixed(1) + '%', n: 'Any tracked entity, selected range' },
     { k: 'Articles mentioning the USA', v: nf.format(anyArt), n: `of ${nf.format(totalArt)} published` },
-    { k: 'Raw alias mentions', v: nf.format(sum(D.mentions_usa, a, N)), n: 'Occurrences of USA aliases' },
-    { k: 'Peak month', v: fmtMonth(D.month[pk]), n: (pkv * 100).toFixed(1) + '% of articles' },
+    'mentions_usa' in D ? { k: 'Raw alias mentions', v: nf.format(sum(D.mentions_usa, a, N)), n: 'Occurrences of USA aliases' }
+      : { k: 'Raw mentions', v: nf.format(sum(D.total_mentions, a, N)), n: 'Occurrences of all tracked entities' },
+    ...(hasSent() ? [{ k: 'Mean sentiment (1–5)', v: sentAvg(a).toFixed(2), n: 'Towards the USA, selected range' }] : []),
+    { k: 'Peak ' + UNIT, v: fmtPeriod(D.p[pk]), n: (pkv * 100).toFixed(1) + '% of articles' },
   ].forEach(t => {
     const d = h('div', { className: 'tile ' + (t.cls || '') });
     d.append(h('div', { className: 'k' }, t.k), h('div', { className: 'v' }, t.v), h('div', { className: 'n' }, t.n));
     kp.appendChild(d);
   });
 
-  document.getElementById('main-desc').textContent = M.desc;
+  document.getElementById('main-desc').textContent = M.desc.replace(/month/g, UNIT);
+  document.getElementById('ent-desc').textContent = `Articles per ${UNIT} mentioning each entity. Each chart has its own vertical scale.`;
   const lg = document.getElementById('main-legend'); lg.replaceChildren();
-  [['Monthly', 'var(--ctx)'], ['3-month average', 'var(--s1)']].forEach(([name, c]) => {
+  [[UNIT === 'month' ? 'Monthly' : 'Weekly', 'var(--ctx)'], [`${W}-${UNIT} average`, 'var(--s1)']].forEach(([name, c]) => {
     const s = h('span'); const i = h('i'); i.style.background = c; s.append(i, name); lg.appendChild(s);
   });
-  const es = h('span'); es.append(h('i', { className: 'dot' }), 'Sanctions-related event (hover the month for details)'); lg.appendChild(es);
+  const es = h('span'); es.append(h('i', { className: 'dot' }), `Sanctions-related event (hover the ${UNIT} for details)`); lg.appendChild(es);
 
   // events table
-  const startMonth = D.month[a], endMonth = D.month[N - 1];
-  const evs = EV.filter(e => e.date.slice(0, 7) >= startMonth);
-  const inData = evs.filter(e => e.date.slice(0, 7) <= endMonth).length;
+  const startMonth = D.p[a], endMonth = D.p[N - 1];
+  const evs = EV.filter(e => periodOf(e.date) >= startMonth);
+  const inData = evs.filter(e => periodOf(e.date) <= endMonth).length;
   document.getElementById('evt-desc').textContent =
     `${inData} events in the selected range (marked on the chart above).` +
-    (evs.length > inData ? ` ${evs.length - inData} later events fall after the data ends in ${fmtMonth(endMonth)} and are listed in grey.` : '');
+    (evs.length > inData ? ` ${evs.length - inData} later events fall after the data ends in ${fmtPeriod(endMonth)} and are listed in grey.` : '');
   const et = document.getElementById('evt-tbl'); et.replaceChildren();
   const eh = h('thead'), er = h('tr');
   [['Date', ''], ['Cat.', 'cat'], ['Event', 'desc']].forEach(([t, c]) => er.appendChild(h('th', { className: c }, t)));
   eh.appendChild(er);
   const eb = h('tbody');
   evs.forEach(e => {
-    const tr = h('tr', { className: e.date.slice(0, 7) > endMonth ? 'off' : '' });
+    const tr = h('tr', { className: periodOf(e.date) > endMonth ? 'off' : '' });
     tr.append(h('td', {}, e.date), h('td', { className: 'cat' }, e.category), h('td', { className: 'desc' }, e.description));
     eb.appendChild(tr);
   });
   et.append(eh, eb);
 
   // table
-  const cols = [['Month', i => fmtMonth(D.month[i])], ['Articles', i => nf.format(D.articles_total[i])],
+  const cols = [[UNIT === 'month' ? 'Month' : 'Week of', i => fmtPeriod(D.p[i])], ['Articles', i => nf.format(D.articles_total[i])],
     ['Mention USA', i => nf.format(D.articles_any_usa[i])], ['Share', i => (D.articles_any_usa[i] / D.articles_total[i] * 100).toFixed(1) + '%'],
-    ['Alias mentions', i => nf.format(D.mentions_usa[i])],
+    ...('mentions_usa' in D ? [['Alias mentions', i => nf.format(D.mentions_usa[i])]] : []),
+    ...(hasSent() ? [['Mean sentiment', i => D.mean_sentiment[i].toFixed(2)], ['% negative', i => (D.share_negative[i] * 100).toFixed(0) + '%'],
+      ['% positive', i => (D.share_positive[i] * 100).toFixed(0) + '%']] : []),
     ...ENTITIES.map(e => [e.label, i => nf.format(D['articles_' + e.key][i])])];
   const tbl = document.getElementById('tbl'); tbl.replaceChildren();
   const thead = h('thead'), hr = h('tr'); cols.forEach(c => hr.appendChild(h('th', {}, c[0]))); thead.appendChild(hr);
@@ -442,18 +500,19 @@ function renderAll() {
   drawCharts();
 }
 function drawCharts() {
-  const a = i0(), months = D.month.slice(a), M = METRICS[state.metric];
+  const a = i0(), months = D.p.slice(a), M = METRICS[state.metric];
   const monthly = [], avg = [];
   for (let i = a; i < N; i++) { monthly.push(M.val(i)); avg.push(i >= W - 1 ? M.roll(i) : null); }
   const eventsAt = {};
-  EV.forEach(e => { (eventsAt[e.date.slice(0, 7)] = eventsAt[e.date.slice(0, 7)] || []).push(e); });
+  EV.forEach(e => { const k = periodOf(e.date); (eventsAt[k] = eventsAt[k] || []).push(e); });
+  const termLines = TERMS.map(t => ({ month: periodOf(t.date), label: t.label }));
   lineChart(document.getElementById('main-chart'), {
-    months, height: 340, mr: 56, fmt: M.fmt, tickFmt: M.tick, events: EVENTS, peakSeries: 0, peakLabel: true,
-    markers: EV.map(e => ({ month: e.date.slice(0, 7) })), eventsAt,
-    aria: `${M.name} per month, ${fmtMonth(months[0])} to ${fmtMonth(months[months.length - 1])}. Use left and right arrow keys to read values.`,
+    months, height: 340, mr: 56, fmt: M.fmt, tickFmt: M.tick, domain: M.domain, domainTicks: M.domainTicks, events: termLines, peakSeries: 0, peakLabel: true,
+    markers: EV.map(e => ({ month: periodOf(e.date) })), eventsAt,
+    aria: `${M.name} per ${UNIT}, ${fmtPeriod(months[0])} to ${fmtPeriod(months[months.length - 1])}. Use left and right arrow keys to read values.`,
     series: [
-      { name: 'Monthly', color: 'var(--ctx)', vals: monthly },
-      { name: '3-month average', color: 'var(--s1)', vals: avg, endDot: true, endLabel: true },
+      { name: UNIT === 'month' ? 'Monthly' : 'Weekly', color: 'var(--ctx)', vals: monthly },
+      { name: `${W}-${UNIT} average`, color: 'var(--s1)', vals: avg, endDot: true, endLabel: true },
     ],
   });
   const fc = document.getElementById('facets');
@@ -469,10 +528,10 @@ function drawCharts() {
     const vals = D['articles_' + e.key].slice(a);
     let pi = 0; vals.forEach((v, i) => { if (v > vals[pi]) pi = i; });
     document.getElementById('pk-' + e.key).textContent =
-      vals[pi] > 0 ? `Peak ${nf.format(vals[pi])} articles in ${fmtMonth(months[pi])} · ${nf.format(vals.reduce((x, y) => x + y, 0))} total` : 'No mentions in range';
+      vals[pi] > 0 ? `Peak ${nf.format(vals[pi])} articles in ${fmtPeriod(months[pi])} · ${nf.format(vals.reduce((x, y) => x + y, 0))} total` : 'No mentions in range';
     lineChart(document.getElementById('fc-' + e.key), {
       months, height: 150, ticks: 2, ml: 36, fmt: v => nf.format(v) + ' articles', tickFmt: v => nf.format(v), area: true, peakSeries: 0,
-      aria: `${e.label}: articles per month mentioning it.`,
+      aria: `${e.label}: articles per ${UNIT} mentioning it.`,
       series: [{ name: e.label, color: 'var(--s1)', vals, endDot: true }],
     });
   });
@@ -486,14 +545,31 @@ function buildControls() {
     b.onclick = () => { state.range = x.id; [...r.children].forEach((c, i) => c.setAttribute('aria-pressed', RANGES[i].id === x.id)); renderAll(); };
     r.appendChild(b);
   });
-  const mt = document.getElementById('metric');
-  Object.entries(METRICS).forEach(([k, v]) => {
-    const b = h('button', { type: 'button' }, v.name);
+  const gr = document.getElementById('gran');
+  if (!DATA.week) gr.closest('.filters-g').style.display = 'none';
+  [['month', 'Monthly'], ['week', 'Weekly']].forEach(([g, label]) => {
+    const b = h('button', { type: 'button' }, label);
+    b.setAttribute('aria-pressed', g === state.gran);
+    b.onclick = () => {
+      state.gran = g; setGran(g);
+      [...gr.children].forEach((c, i) => c.setAttribute('aria-pressed', ['month', 'week'][i] === g));
+      if (!metricKeys().includes(state.metric)) state.metric = 'share';  // e.g. raw alias mentions are monthly-only
+      buildMetricButtons(); renderAll();
+    };
+    gr.appendChild(b);
+  });
+  buildMetricButtons();
+}
+function buildMetricButtons() {
+  const mt = document.getElementById('metric'); mt.replaceChildren();
+  metricKeys().forEach(k => {
+    const b = h('button', { type: 'button' }, METRICS[k].name);
     b.setAttribute('aria-pressed', k === state.metric);
-    b.onclick = () => { state.metric = k; [...mt.children].forEach((c, i) => c.setAttribute('aria-pressed', Object.keys(METRICS)[i] === k)); renderAll(); };
+    b.onclick = () => { state.metric = k; [...mt.children].forEach((c, i) => c.setAttribute('aria-pressed', metricKeys()[i] === k)); renderAll(); };
     mt.appendChild(b);
   });
 }
+setGran('month');
 buildControls();
 renderAll();
 let rz; new ResizeObserver(() => { clearTimeout(rz); rz = setTimeout(drawCharts, 80); }).observe(document.querySelector('main'));

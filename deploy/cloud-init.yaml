@@ -1,0 +1,109 @@
+#cloud-config
+# Cloud-init for a hand-deployed GPU instance (e.g. Scaleway L4 / L40S / H100).
+#
+# How to use (Scaleway console): create the instance with a "GPU OS" image
+# (Ubuntu with NVIDIA drivers, Docker and the NVIDIA container toolkit preinstalled),
+# open "Advanced options" and paste this whole file into "Cloud-init" / user data.
+# Edit the CONFIG block below first. It runs once, on first boot, as root.
+#
+# What it does:
+#   1. installs git, tmux, uv; makes sure the user APP_USER (default "ubuntu") exists
+#      (it is created, with root's SSH keys and passwordless sudo, if the image has none)
+#      and can run docker
+#   2. clones the repo into that user's home, owned by that user, and runs `uv sync` as them
+#   3. in the background, pre-pulls the vLLM Docker image and pre-downloads the model weights
+#      into that user's Hugging Face cache
+# It does NOT start the model server: SSH in as that user and run  deploy/serve_vllm.sh.
+#
+# Progress / result:   tail -f /var/log/gpr-setup.log      (a line "SETUP DONE" means finished)
+#
+# Private repo? Prefer cloning by hand over SSH after boot. If you must clone over HTTPS
+# with a token in REPO_URL, remember cloud-init user data is readable on the instance
+# and by anyone with access to the instance in the console; use a read-only, expiring token.
+
+package_update: true
+packages:
+  - git
+  - curl
+  - ca-certificates
+  - tmux
+
+write_files:
+  - path: /usr/local/bin/gpr-setup
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      # ------------------------------ CONFIG ------------------------------
+      APP_USER="ubuntu"                            # user who owns the repo and runs the model server
+      REPO_URL="https://github.com/gmguarino/gpr-currency.git"
+      BRANCH="sentiment-analysis"
+      TARGET_DIR="/home/$APP_USER/gpr-currency"
+      MODEL="Qwen/Qwen3.5-9B"                      # weights to pre-download ("" to skip)
+      VLLM_IMAGE="vllm/vllm-openai:latest"         # image to pre-pull ("" to skip)
+      # --------------------------------------------------------------------
+
+      export PATH="/usr/local/bin:$PATH"
+      log() { echo "[$(date -u +%FT%TZ)] $*"; }
+
+      log "GPU check"
+      nvidia-smi -L || log "WARNING: no NVIDIA GPU/driver visible. Use a GPU OS image."
+      nvidia-smi --query-gpu=driver_version --format=csv,noheader || true
+      docker --version || log "WARNING: docker missing. Use a GPU OS image."
+      docker info 2>/dev/null | grep -i "runtimes" || true
+
+      log "Preparing user $APP_USER"
+      if ! id "$APP_USER" >/dev/null 2>&1; then
+        # The image has no such user (e.g. root-only images): create it, reuse root's SSH keys
+        useradd --create-home --shell /bin/bash --groups sudo "$APP_USER"
+        echo "$APP_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-$APP_USER"
+        chmod 440 "/etc/sudoers.d/90-$APP_USER"
+        if [ -f /root/.ssh/authorized_keys ]; then
+          install -d -m 700 -o "$APP_USER" -g "$APP_USER" "/home/$APP_USER/.ssh"
+          install -m 600 -o "$APP_USER" -g "$APP_USER" /root/.ssh/authorized_keys "/home/$APP_USER/.ssh/authorized_keys"
+        fi
+      fi
+      APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
+      # Let the user run docker (takes effect at their next login)
+      getent group docker >/dev/null || groupadd docker
+      usermod -aG docker "$APP_USER"
+      # Run a command as that user, with their HOME, so files and caches belong to them
+      as_user() { runuser -u "$APP_USER" -- env HOME="$APP_HOME" PATH="$PATH" "$@"; }
+
+      log "Installing uv"
+      if ! command -v uv >/dev/null; then
+        curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+      fi
+      uv --version
+
+      log "Cloning $REPO_URL ($BRANCH) into $TARGET_DIR as $APP_USER"
+      if [ -d "$TARGET_DIR/.git" ]; then
+        chown -R "$APP_USER:$APP_USER" "$TARGET_DIR"
+        as_user git -C "$TARGET_DIR" fetch origin
+        as_user git -C "$TARGET_DIR" checkout "$BRANCH"
+        as_user git -C "$TARGET_DIR" pull --ff-only origin "$BRANCH"
+      else
+        as_user git clone --branch "$BRANCH" "$REPO_URL" "$TARGET_DIR"
+      fi
+
+      log "uv sync"
+      cd "$TARGET_DIR"
+      as_user uv sync
+
+      if [ -n "$VLLM_IMAGE" ] && command -v docker >/dev/null; then
+        log "Pre-pulling $VLLM_IMAGE"
+        docker pull "$VLLM_IMAGE" || log "WARNING: docker pull failed"
+      fi
+      if [ -n "$MODEL" ]; then
+        log "Pre-downloading $MODEL into $APP_HOME/.cache/huggingface (used by deploy/serve_vllm.sh)"
+        as_user uv run python -c "from huggingface_hub import snapshot_download; snapshot_download('$MODEL')" \
+          || log "WARNING: model pre-download failed (serve_vllm.sh will download it on start)"
+      fi
+
+      chown -R "$APP_USER:$APP_USER" "$TARGET_DIR"
+      log "SETUP DONE. Log in as $APP_USER (a fresh SSH session, so the docker group applies), then: cd $TARGET_DIR && deploy/serve_vllm.sh"
+
+runcmd:
+  # Run in the background so cloud-init (and SSH) are not held up by multi-GB downloads.
+  - [ bash, -c, "nohup /usr/local/bin/gpr-setup > /var/log/gpr-setup.log 2>&1 &" ]
