@@ -18,11 +18,15 @@ Python project managed with [uv](https://docs.astral.sh/uv/).
 - `hello.py` — placeholder entry point
 - `scripts/` — data pipeline (run from the repo root; scripts import each other as siblings)
   - `download_data.py` — downloads `Papersnake/people_daily_news` yearly files (2010+) to `data/raw/`
-  - `usa_mentions.py` — shared module: article loading, generated article ids (`YYYYMMDD-NNN`), and `ALIASES` (entity → list of `(regex, English translation)`; `ENTITIES` is compiled from it) covering USA, president/White House, Obama, Trump, Biden, Bush, Congress, Fed
+  - `usa_mentions.py` — shared module: article loading, generated article ids (`YYYYMMDD-NNN`), `mention_window` (excerpt from before the first to after the last entity mention, used for sentiment scoring), and `ALIASES` (entity → list of `(regex, English translation)`; `ENTITIES` is compiled from it) covering USA, president/White House, Obama, Trump, Biden, Bush, Congress, Fed
   - `monthly_usa_mentions.py` — per-month article/mention counts → `data/processed/usa_mentions_monthly.csv` (includes `share_alias_mentions` = articles mentioning ≥1 USA alias, i.e. `articles_usa` ÷ `articles_total`; `share_any_usa` covers any entity)
   - `article_usa_mentions.py` — per-article flags and matched entities → `data/processed/usa_mentions_articles.csv`
+  - `sentiment_benchmark.py` — benchmarks local Ollama Qwen models (default `qwen3.5:9b`, `qwen3.5:9b-mlx`, `qwen3.5:4b`) on scoring article sentiment towards the USA (1–5); writes `data/processed/sentiment_sample.jsonl` and `sentiment_benchmark.jsonl`
+  - `sentiment_common.py` — shared sentiment prompt (`build_messages`) and JSON schemas; used by the benchmark and the scoring client so both use identical instructions
+  - `score_sentiment.py` — batch client for an OpenAI-compatible server (vLLM from `deploy/`): builds `data/processed/sentiment_inputs.jsonl` (excerpts of the 32.5k USA-mentioning articles), scores them 1–5 concurrently and resumably into `sentiment_scores.jsonl`, then writes `sentiment_scores.csv` and `sentiment_monthly.csv`. vLLM disables thinking via `chat_template_kwargs`; Ollama needs `--extra-body '{"reasoning_effort": "none"}'`
   - `export_aliases.py` — writes `docs/entity_aliases.csv` (entity, regex, English translation) for English-speaking researchers
   - `build_dashboard.py` + `dashboard_template.html` — embeds the monthly CSV and the events CSV into a self-contained HTML dashboard (hand-written SVG, no external libs) → `docs/usa_mentions_dashboard.html`; main chart metrics: share of articles, article count, share of articles mentioning a USA alias (`share_alias_mentions`), raw mentions; rerun after regenerating the monthly CSV
+- `deploy/` — GPU deployment: `cloud-init.yaml` (paste as Scaleway user data; installs uv, clones the repo on a branch set in its CONFIG block, `uv sync`, pre-pulls the vLLM image and weights) and `serve_vllm.sh` (Docker-based vLLM server, configured via env vars; `start|stop|restart|status|logs|test`). Keep the repo URL/branch/model defaults in `cloud-init.yaml` and `serve_vllm.sh` consistent
 - `reference/sanctions_events.csv` — hand-maintained timeline of sanctions-related events (`date,category,description`; categories A–D, meanings not yet documented); shown on the dashboard as vertical lines, baseline dots, tooltips and a list. Events after the last data month are listed but not plotted
 - `docs/usa_mentions_dashboard.html` — committed, generated dashboard (edit the template, not this file)
 - `docs/entity_aliases.csv` — committed, generated alias glossary; regenerate after editing `ALIASES`
@@ -41,6 +45,8 @@ uv run python scripts/build_dashboard.py
 The dataset has fields `date` (`YYYY.MM.DD`), `title`, `text` and no id. Text is Chinese, so entity matching uses Chinese regexes after NFKC normalisation. Entity groups overlap by design. `美国` excludes `美国家`/`美国际` to avoid matching "欧美国家"/"中美国际".
 
 The `usa` entity is built from `ALIASES["usa"]` in `scripts/usa_mentions.py`: country names/nicknames (美利坚, 山姆大叔, 美帝), 美-abbreviations (美方, 美军, 美媒, 美政府, 美股…), metonyms (华盛顿, 五角大楼), bilateral pairings (中美, 美中, 美俄…), travel/trade forms (访美, 赴美, 对美出口…) and Latin forms (US, U.S., USA, America). Single-character 美 compounds are guarded against false positives (完美, 精美, 中美洲, 美中不足); when adding aliases, test them against such cases. Every alias must have an English translation; rerun `scripts/export_aliases.py` afterwards.
+
+`README.md` holds the user-facing setup and run instructions for every script; keep it in sync whenever a script, option, output or workflow changes.
 
 ## Maintaining this file
 

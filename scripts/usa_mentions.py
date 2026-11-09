@@ -13,6 +13,7 @@ import gzip
 import json
 import re
 import unicodedata
+from bisect import bisect_right
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -140,3 +141,29 @@ def count_mentions(title: str, text: str) -> dict[str, int]:
     content = unicodedata.normalize("NFKC", f"{title}\n{text}")
     counts = {name: len(p.findall(content)) for name, p in ENTITIES.items()}
     return {name: n for name, n in counts.items() if n}
+
+
+_SENTENCE_END = re.compile(r"[。！？!?\n]")
+
+
+def mention_window(text: str, context: int = 1, max_chars: int | None = None) -> str:
+    """Excerpt of ``text`` from before the first entity mention to after the last.
+
+    The excerpt starts at the beginning of the sentence containing the first mention and
+    ends at the end of the sentence containing the last mention, widened by ``context``
+    extra sentences on each side. If nothing matches (e.g. the mention is only in the
+    title) the start of the text is returned. ``max_chars`` caps the length (the end is cut).
+    The text is NFKC-normalised, as in ``count_mentions``.
+    """
+    content = unicodedata.normalize("NFKC", text)
+    spans = [m.span() for p in ENTITIES.values() for m in p.finditer(content)]
+    if not spans:
+        window = content
+    else:
+        first = min(a for a, _ in spans)
+        last = max(b for _, b in spans) - 1
+        bounds = sorted({0, len(content), *(m.end() for m in _SENTENCE_END.finditer(content))})
+        i = max(0, bisect_right(bounds, first) - 1 - context)
+        j = min(len(bounds) - 2, bisect_right(bounds, last) - 1 + context)
+        window = content[bounds[i] : bounds[j + 1]]
+    return window[:max_chars] if max_chars else window

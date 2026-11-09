@@ -1,0 +1,86 @@
+#cloud-config
+# Cloud-init for a hand-deployed GPU instance (e.g. Scaleway L4 / L40S / H100).
+#
+# How to use (Scaleway console): create the instance with a "GPU OS" image
+# (Ubuntu with NVIDIA drivers, Docker and the NVIDIA container toolkit preinstalled),
+# open "Advanced options" and paste this whole file into "Cloud-init" / user data.
+# Edit the CONFIG block below first. It runs once, on first boot, as root.
+#
+# What it does:
+#   1. installs git, tmux, uv
+#   2. clones the repo and runs `uv sync`
+#   3. in the background, pre-pulls the vLLM Docker image and pre-downloads the model weights
+# It does NOT start the model server: SSH in and run  deploy/serve_vllm.sh  yourself.
+#
+# Progress / result:   tail -f /var/log/gpr-setup.log      (a line "SETUP DONE" means finished)
+#
+# Private repo? Prefer cloning by hand over SSH after boot. If you must clone over HTTPS
+# with a token in REPO_URL, remember cloud-init user data is readable on the instance
+# and by anyone with access to the instance in the console; use a read-only, expiring token.
+
+package_update: true
+packages:
+  - git
+  - curl
+  - ca-certificates
+  - tmux
+
+write_files:
+  - path: /usr/local/bin/gpr-setup
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      # ------------------------------ CONFIG ------------------------------
+      REPO_URL="https://github.com/gmguarino/gpr-currency.git"
+      BRANCH="sentiment-analysis"
+      TARGET_DIR="/root/gpr-currency"
+      MODEL="Qwen/Qwen3.5-9B"                      # weights to pre-download ("" to skip)
+      VLLM_IMAGE="vllm/vllm-openai:latest"         # image to pre-pull ("" to skip)
+      # --------------------------------------------------------------------
+
+      export HOME=/root
+      export PATH="/usr/local/bin:$PATH"
+      log() { echo "[$(date -u +%FT%TZ)] $*"; }
+
+      log "GPU check"
+      nvidia-smi -L || log "WARNING: no NVIDIA GPU/driver visible. Use a GPU OS image."
+      docker --version || log "WARNING: docker missing. Use a GPU OS image."
+      docker info 2>/dev/null | grep -i "runtimes" || true
+
+      log "Installing uv"
+      if ! command -v uv >/dev/null; then
+        curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+      fi
+      uv --version
+
+      log "Cloning $REPO_URL ($BRANCH) into $TARGET_DIR"
+      if [ -d "$TARGET_DIR/.git" ]; then
+        git -C "$TARGET_DIR" fetch origin
+        git -C "$TARGET_DIR" checkout "$BRANCH"
+        git -C "$TARGET_DIR" pull --ff-only origin "$BRANCH"
+      else
+        git clone --branch "$BRANCH" "$REPO_URL" "$TARGET_DIR"
+      fi
+
+      log "uv sync"
+      cd "$TARGET_DIR"
+      uv sync
+
+      if [ -n "$VLLM_IMAGE" ] && command -v docker >/dev/null; then
+        log "Pre-pulling $VLLM_IMAGE"
+        docker pull "$VLLM_IMAGE" || log "WARNING: docker pull failed"
+      fi
+      if [ -n "$MODEL" ]; then
+        log "Pre-downloading $MODEL into ~/.cache/huggingface (used by deploy/serve_vllm.sh)"
+        uv run python -c "from huggingface_hub import snapshot_download; snapshot_download('$MODEL')" \
+          || log "WARNING: model pre-download failed (serve_vllm.sh will download it on start)"
+      fi
+
+      echo "export PATH=/usr/local/bin:\$PATH" > /etc/profile.d/gpr.sh
+      log "SETUP DONE. Next: cd $TARGET_DIR && deploy/serve_vllm.sh"
+
+runcmd:
+  # Run in the background so cloud-init (and SSH) are not held up by multi-GB downloads.
+  - [ bash, -c, "nohup /usr/local/bin/gpr-setup > /var/log/gpr-setup.log 2>&1 &" ]
