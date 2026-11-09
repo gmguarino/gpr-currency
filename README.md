@@ -196,14 +196,15 @@ Scoring all ~32.5k USA-mentioning articles with a 9B model takes about 12 hours 
 
 **1. Push your branch.** The cloud-init clones the repo from GitHub, so the branch it names (`BRANCH` in the CONFIG block, default `sentiment-analysis`) must be pushed, and the repo must be reachable (public, or see the note about private repos in the file).
 
-**2. Create the instance.** In the Scaleway console create a GPU instance (L4-1-24G, L40S-1-48G or H100-1-80G) with a **GPU OS** image (Ubuntu with NVIDIA drivers, Docker and the NVIDIA container toolkit preinstalled). Under *Advanced options → Cloud-init*, paste the contents of `deploy/cloud-init.yaml` after editing its CONFIG block (`REPO_URL`, `BRANCH`, `MODEL`, `VLLM_IMAGE`). Allow ~40 GB of disk for the image and weights.
+**2. Create the instance.** In the Scaleway console create a GPU instance (L4-1-24G, L40S-1-48G or H100-1-80G) with a **GPU OS** image (Ubuntu with NVIDIA drivers, Docker and the NVIDIA container toolkit preinstalled). Under *Advanced options → Cloud-init*, paste the contents of `deploy/cloud-init.yaml` after editing its CONFIG block (`APP_USER`, `REPO_URL`, `BRANCH`, `MODEL`, `VLLM_IMAGE`). The repo is cloned into `/home/<APP_USER>/gpr-currency`, owned by that user (default `ubuntu`, created if the image has no such user), who is also added to the `docker` group and gets the model cache in their home. Allow ~40 GB of disk for the image and weights.
 
 **3. Wait for setup, then connect.**
 
 ```bash
-ssh root@<instance-ip>
+ssh ubuntu@<instance-ip>             # cloud-init creates the ubuntu user if the image has none
 tail -f /var/log/gpr-setup.log        # wait for "SETUP DONE" (a few minutes: it downloads ~18 GB of weights)
-cd /root/gpr-currency
+exit && ssh ubuntu@<instance-ip>      # log in again so the docker group membership applies
+cd ~/gpr-currency
 ```
 
 **4. Start the model server.**
@@ -216,7 +217,7 @@ deploy/serve_vllm.sh test                         # send one sample sentiment re
 deploy/serve_vllm.sh status | logs | stop | restart
 ```
 
-The server exposes an OpenAI-compatible API at `http://127.0.0.1:8000/v1` (model name `qwen`). It listens on localhost only. Run the scoring client on the instance, or reach the server from your laptop through a tunnel: `ssh -L 8000:localhost:8000 root@<instance-ip>`. To expose it publicly set `BIND=0.0.0.0` **and** `VLLM_API_KEY`. All options (context length, memory fraction, batch size, extra vLLM arguments, image tag, ...) are environment variables listed at the top of `deploy/serve_vllm.sh`.
+The server exposes an OpenAI-compatible API at `http://127.0.0.1:8000/v1` (model name `qwen`). It listens on localhost only. Run the scoring client on the instance, or reach the server from your laptop through a tunnel: `ssh -L 8000:localhost:8000 ubuntu@<instance-ip>`. To expose it publicly set `BIND=0.0.0.0` **and** `VLLM_API_KEY`. All options (context length, memory fraction, batch size, extra vLLM arguments, image tag, ...) are environment variables listed at the top of `deploy/serve_vllm.sh`.
 
 Qwen3.5 has a thinking mode; clients should send `"chat_template_kwargs": {"enable_thinking": false}` with each request (the `test` command does). The Qwen3.5 models are multimodal; if vLLM runs short of memory on the 24 GB L4, try `EXTRA_ARGS="--limit-mm-per-prompt {}"` or a smaller `MAX_MODEL_LEN` (check the vLLM docs for the flags your image version supports).
 

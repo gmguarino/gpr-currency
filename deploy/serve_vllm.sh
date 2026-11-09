@@ -35,7 +35,7 @@
 #
 # The server listens on localhost only by default. Run the scoring client on the same
 # machine, or reach it from your laptop through an SSH tunnel:
-#   ssh -L 8000:localhost:8000 root@<instance-ip>
+#   ssh -L 8000:localhost:8000 ubuntu@<instance-ip>
 
 set -euo pipefail
 
