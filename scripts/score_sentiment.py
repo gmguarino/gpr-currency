@@ -57,19 +57,42 @@ def build_inputs(raw_dir: Path, out: Path, context: int, max_chars: int) -> None
 
 
 def read_jsonl(path: Path) -> list[dict]:
+    """Read a JSONL file, skipping unparsable lines (e.g. one truncated by a crash)."""
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows, bad = [], 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            bad += 1
+    if bad:
+        print(f"  warning: skipped {bad} unreadable line(s) in {path} (likely cut off by an interruption)")
+    return rows
 
 
-def score_one(art: dict, a: argparse.Namespace) -> dict:
-    schema = SCHEMA if a.reason else SCHEMA_SCORE_ONLY
+def ensure_trailing_newline(path: Path) -> None:
+    """Make sure appended records start on a fresh line, even after an interrupted write."""
+    if path.exists() and path.stat().st_size:
+        with path.open("rb+") as f:
+            f.seek(-1, 2)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
+
+
+def chat_json(a: argparse.Namespace, messages: list[dict], schema: dict, max_tokens: int, name: str = "sentiment"):
+    """POST a chat request constrained to `schema`; retry on failure.
+
+    Returns (parsed_json, response, None) on success or (None, None, error_text) after the retries.
+    """
     body = {
         "model": a.model,
-        "messages": build_messages(art["title"], art["excerpt"], a.reason),
+        "messages": messages,
         "temperature": 0,
-        "max_tokens": a.max_tokens,
-        "response_format": {"type": "json_schema", "json_schema": {"name": "sentiment", "strict": True, "schema": schema}},
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
         "chat_template_kwargs": {"enable_thinking": False},
         **a.extra_body,
     }
@@ -81,21 +104,30 @@ def score_one(art: dict, a: argparse.Namespace) -> dict:
             req = urllib.request.Request(req_url, json.dumps(body).encode(), headers)
             with urllib.request.urlopen(req, timeout=a.timeout) as r:
                 resp = json.load(r)
-            content = resp["choices"][0]["message"]["content"] or ""
-            parsed = json.loads(content)
-            score = int(parsed["score"])
-            if not 1 <= score <= 5:
-                raise ValueError(f"score out of range: {score}")
-            return {"id": art["id"], "date": art["date"], "score": score,
-                    "reason": str(parsed.get("reason", "")), "model": a.model,
-                    "tokens_in": resp.get("usage", {}).get("prompt_tokens"),
-                    "tokens_out": resp.get("usage", {}).get("completion_tokens")}
+            return json.loads(resp["choices"][0]["message"]["content"] or ""), resp, None
         except urllib.error.HTTPError as e:
             last_err = f"HTTP {e.code}: {e.read()[:200]!r}"
         except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError, KeyError, TypeError) as e:
             last_err = f"{type(e).__name__}: {e}"
         time.sleep(2 ** attempt)
-    return {"id": art["id"], "date": art["date"], "score": None, "reason": "", "model": a.model, "error": last_err}
+    return None, None, last_err
+
+
+def score_one(art: dict, a: argparse.Namespace) -> dict:
+    schema = SCHEMA if a.reason else SCHEMA_SCORE_ONLY
+    fail = {"id": art["id"], "date": art["date"], "score": None, "reason": "", "model": a.model}
+    parsed, resp, err = chat_json(a, build_messages(art["title"], art["excerpt"], a.reason), schema, a.max_tokens)
+    if parsed is None:
+        return {**fail, "error": err}
+    try:
+        score = int(parsed["score"])
+        if not 1 <= score <= 5:
+            raise ValueError(f"score out of range: {score}")
+    except (KeyError, TypeError, ValueError) as e:
+        return {**fail, "error": f"{type(e).__name__}: {e}"}
+    usage = resp.get("usage", {})
+    return {"id": art["id"], "date": art["date"], "score": score, "reason": str(parsed.get("reason", "")),
+            "model": a.model, "tokens_in": usage.get("prompt_tokens"), "tokens_out": usage.get("completion_tokens")}
 
 
 def summarise(scores_path: Path, csv_out: Path, monthly_out: Path) -> None:
@@ -163,23 +195,32 @@ def main() -> None:
 
     if todo:
         a.out.parent.mkdir(parents=True, exist_ok=True)
-        t0, n_ok, n_fail, lock = time.perf_counter(), 0, 0, threading.Lock()
-        with a.out.open("a", encoding="utf-8") as f, ThreadPoolExecutor(a.concurrency) as pool:
-            futures = [pool.submit(score_one, art, a) for art in todo]
-            for i, fut in enumerate(as_completed(futures), 1):
-                res = fut.result()
-                with lock:
+        ensure_trailing_newline(a.out)
+        t0, n_ok, n_fail, interrupted = time.perf_counter(), 0, 0, False
+        pool = ThreadPoolExecutor(a.concurrency)
+        futures = [pool.submit(score_one, art, a) for art in todo]
+        try:
+            with a.out.open("a", encoding="utf-8") as f:
+                for i, fut in enumerate(as_completed(futures), 1):
+                    res = fut.result()
                     f.write(json.dumps(res, ensure_ascii=False) + "\n")
-                    if i % 50 == 0:
-                        f.flush()
-                n_ok += res["score"] is not None
-                n_fail += res["score"] is None
-                if n_fail and res["score"] is None and n_fail <= 3:
-                    print(f"  failed {res['id']}: {res.get('error')}")
-                if i % 200 == 0 or i == len(todo):
-                    rate = i / (time.perf_counter() - t0)
-                    print(f"  {i}/{len(todo)}  {rate:.1f} articles/s  ETA {(len(todo) - i) / rate / 60:.1f} min  ({n_fail} failed)")
-            f.flush()
+                    f.flush()  # every result is on disk straight away, so nothing is lost if we are killed
+                    n_ok += res["score"] is not None
+                    n_fail += res["score"] is None
+                    if res["score"] is None and n_fail <= 3:
+                        print(f"  failed {res['id']}: {res.get('error')}")
+                    if i % 200 == 0 or i == len(todo):
+                        rate = i / (time.perf_counter() - t0)
+                        print(f"  {i}/{len(todo)}  {rate:.1f} articles/s  ETA {(len(todo) - i) / rate / 60:.1f} min  ({n_fail} failed)")
+        except KeyboardInterrupt:
+            interrupted = True
+            print("\nInterrupted: dropping queued requests (those already in flight finish and are discarded) ...")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        if interrupted:
+            summarise(a.out, a.csv_out, a.monthly_out)
+            print("Re-run the same command to continue where it stopped.")
+            raise SystemExit(130)
         if n_fail and n_ok == 0:
             raise SystemExit("Every request failed: is the server running? (deploy/serve_vllm.sh status)")
 

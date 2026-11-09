@@ -10,6 +10,8 @@ How often, and in what tone, does China's *People's Daily* (人民日报) talk a
 - [The scripts](#the-scripts)
 - [Outputs](#outputs)
 - [The dashboard](#the-dashboard)
+- [Reviewing the scores with a second pass](#reviewing-the-scores-with-a-second-pass)
+- [Arbitrating disagreements (third pass)](#arbitrating-disagreements-third-pass)
 - [Customising](#customising)
 - [Sentiment benchmark](#sentiment-benchmark)
 - [Cloud GPU deployment (Scaleway)](#cloud-gpu-deployment-scaleway)
@@ -95,12 +97,22 @@ uv run python scripts/export_aliases.py
 
 ### `build_dashboard.py`: HTML dashboard
 
-Embeds the monthly CSV and `reference/sanctions_events.csv` into `scripts/dashboard_template.html` and writes the standalone `docs/usa_mentions_dashboard.html` (no server, libraries or network needed). Re-run it whenever the monthly CSV, the events file or the template changes. **Edit the template, not the generated HTML.**
+Embeds the monthly CSV and `reference/sanctions_events.csv` into `scripts/dashboard_template.html` and writes the standalone `docs/usa_mentions_dashboard.html` (no server, libraries or network needed). If `data/processed/sentiment_monthly.csv` exists (from `score_sentiment.py`) it is merged in too, adding the **Sentiment (1–5)**, **Share negative** and **Share positive** views and a mean-sentiment tile (without a sentiment file those views are simply absent). The sentiment file defaults to `sentiment_final_monthly.csv` (final scores after the review and arbitration passes) if it exists, otherwise `sentiment_monthly.csv` (first pass); `--sentiment PATH` overrides this. If `data/processed/usa_mentions_weekly.csv` exists (from `weekly_aggregates.py`; `--weekly PATH` to override) the dashboard also gets a **Monthly / Weekly** toggle; run `weekly_aggregates.py` before `build_dashboard.py` so both use the same sentiment scores. Rolling averages are weighted by the number of articles scored. Re-run it whenever the monthly CSV, the events file or the template changes. **Edit the template, not the generated HTML.**
 
 ```bash
 uv run python scripts/build_dashboard.py
 uv run python scripts/build_dashboard.py --csv data/processed/usa_mentions_monthly.csv --out docs/usa_mentions_dashboard.html
 ```
+
+### `weekly_aggregates.py`: weekly aggregation
+
+Groups the existing per-article files by week (Monday start, `week_start` column) into `data/processed/usa_mentions_weekly.csv`, **without re-reading the raw data or re-running any model** (a few seconds). It reads `usa_mentions_articles.csv` and the sentiment scores: `--sentiment auto` (default) uses `sentiment_final.csv` if it exists (after the review and arbitration passes), otherwise `sentiment_scores.csv`; `first`, `final` and `none` force a choice.
+
+```bash
+uv run python scripts/weekly_aggregates.py
+```
+
+Columns: `articles_total`, `articles_any_usa`, `share_any_usa`, `share_alias_mentions`, `articles_<entity>`, `total_mentions` (all entities together; per-entity raw mentions exist only in the monthly file), and `articles_scored`, `mean_sentiment`, `share_negative`, `share_positive`. The first and last weeks are partial (the data starts on a Friday and ends on a Wednesday). Weekly sentiment rests on a median of about 39 scored articles (as few as 3), so it is noisier than monthly; consider a moving average. The dashboard is still monthly.
 
 ### `usa_mentions.py`: shared module (not run directly)
 
@@ -118,7 +130,9 @@ Everything under `data/` is generated and git-ignored; regenerate it with the co
 |---|---|
 | `data/raw/YYYY.jsonl.gz` | Downloaded articles, one file per year |
 | `data/processed/usa_mentions_monthly.csv` | One row per month (see columns below) |
+| `data/processed/usa_mentions_weekly.csv` | One row per week: mention counts and sentiment, see `weekly_aggregates.py` |
 | `data/processed/usa_mentions_articles.csv` | One row per article: `article_id`, `date`, `title`, `mentions_usa` (True/False), `entities` (`;`-separated), `total_mentions` |
+| `data/processed/sentiment_*.csv/.jsonl` | Sentiment scores, monthly summary, reviews, arbitrations and final scores, see [Scoring](#scoring-sentiment-with-a-model-server) and [Reviewing](#reviewing-the-scores-with-a-second-pass) |
 | `docs/entity_aliases.csv` | Glossary: `entity`, `pattern` (regex), `english` (committed) |
 | `docs/usa_mentions_dashboard.html` | The dashboard (committed) |
 
@@ -143,7 +157,7 @@ Open `docs/usa_mentions_dashboard.html` in any browser. It supports light and da
 - **Named people and institutions**: small charts of articles per month for the president/White House, Obama, Trump, Biden, Congress and the Fed (each has its own vertical scale).
 - **Table view**: a collapsible table of the selected range.
 
-The moving-average window is the `W` constant near the top of the script in `scripts/dashboard_template.html`.
+The moving-average window is set in `setGran` in `scripts/dashboard_template.html` (3 months, 4 weeks). The **Aggregation** toggle switches the whole dashboard between monthly and weekly data; in the weekly view the date ranges, event lines, tooltips and tables all use weeks (starting Monday), and the *Raw mentions* metric is hidden because per-entity raw mentions exist only in the monthly file.
 
 ## Customising
 
@@ -189,41 +203,93 @@ Each article is not sent whole: it is cut to an excerpt running from the sentenc
 
 ## Cloud GPU deployment (Scaleway)
 
-Scoring all ~32.5k USA-mentioning articles with a 9B model takes about 12 hours on a laptop and roughly 0.5-3 hours on a cloud GPU (L4, L40S or H100; the L40S is the best value). `deploy/` contains what you need to bring up a GPU box by hand and serve a model with [vLLM](https://docs.vllm.ai/):
+Scoring all ~32.5k USA-mentioning articles with the 9B model takes about 12 hours on a laptop (measured with Ollama) and, by estimate, well under 3 hours on a cloud GPU. This section is the step-by-step guide to doing it on a GPU instance you create by hand. `deploy/` contains:
 
-- `deploy/cloud-init.yaml`: cloud-init (user data) that installs git, tmux and uv, clones this repo, runs `uv sync`, and pre-pulls the vLLM Docker image and the model weights in the background.
-- `deploy/serve_vllm.sh`: starts, stops and tests a vLLM OpenAI-compatible server in Docker.
+- `deploy/cloud-init.yaml`: cloud-init (user data) that creates/prepares the `ubuntu` user, installs git, tmux and uv, clones this repo into `/home/ubuntu/gpr-currency` (owned by `ubuntu`), runs `uv sync`, and pre-pulls the vLLM Docker image and the model weights in the background.
+- `deploy/serve_vllm.sh`: starts, stops and tests a [vLLM](https://docs.vllm.ai/) OpenAI-compatible server in Docker.
 
-**1. Push your branch.** The cloud-init clones the repo from GitHub, so the branch it names (`BRANCH` in the CONFIG block, default `sentiment-analysis`) must be pushed, and the repo must be reachable (public, or see the note about private repos in the file).
+The model runs on the GPU instance; the scoring client (`scripts/score_sentiment.py`, see [Scoring sentiment with a model server](#scoring-sentiment-with-a-model-server)) can run either on your laptop through an SSH tunnel (recommended) or on the instance itself.
 
-**2. Create the instance.** In the Scaleway console create a GPU instance (L4-1-24G, L40S-1-48G or H100-1-80G) with a **GPU OS** image (Ubuntu with NVIDIA drivers, Docker and the NVIDIA container toolkit preinstalled). Under *Advanced options → Cloud-init*, paste the contents of `deploy/cloud-init.yaml` after editing its CONFIG block (`APP_USER`, `REPO_URL`, `BRANCH`, `MODEL`, `VLLM_IMAGE`). The repo is cloned into `/home/<APP_USER>/gpr-currency`, owned by that user (default `ubuntu`, created if the image has no such user), who is also added to the `docker` group and gets the model cache in their home. Allow ~40 GB of disk for the image and weights.
+### Which GPU
 
-**3. Wait for setup, then connect.**
+| GPU | Memory | Server settings | Estimated time for all articles* |
+|---|---|---|---|
+| L4 | 24 GB | `QUANTIZATION=fp8` (the weights do not fit otherwise) | 2-3 h |
+| L40S | 48 GB | defaults | 0.7-1.2 h |
+| H100 | 80 GB | `MAX_NUM_SEQS=256` | 0.3-0.6 h |
+| RTX 6000 Blackwell (RTX6000B-1-96G) | 96 GB | `MAX_NUM_SEQS=256`; needs NVIDIA driver 570+ (CUDA 12.8+) and a recent vLLM image | 0.4-1 h |
+
+\*Estimates from hardware specs for `Qwen/Qwen3.5-9B` with excerpts of ~660 tokens, not measurements; check Scaleway's pricing page for current prices (billed per minute while the instance exists). With 96 GB you could also try a larger model such as Qwen3.5-27B (`MODEL=...`), at roughly 2-3x the time; decide on a hand-labelled sample.
+
+### 1. Push the branch
+
+The cloud-init clones the repo from GitHub, so the branch named in its CONFIG block (`BRANCH`, default `sentiment-analysis`) must be pushed with your latest commits, and the repo must be reachable without credentials (public). For a private repo, clone by hand over SSH after boot instead (see the note at the top of `cloud-init.yaml`).
+
+### 2. Create the instance
+
+In the Scaleway console create the GPU instance with a **GPU OS** image (Ubuntu with NVIDIA drivers, Docker and the NVIDIA container toolkit preinstalled) and about 40 GB of disk (image + weights). Under *Advanced options → Cloud-init*, paste the contents of `deploy/cloud-init.yaml` after editing its CONFIG block (`APP_USER`, `REPO_URL`, `BRANCH`, `MODEL`, `VLLM_IMAGE`). If the image has no `ubuntu` user, cloud-init creates it with root's SSH keys and passwordless sudo.
+
+### 3. Wait for the setup, then log in again
 
 ```bash
-ssh ubuntu@<instance-ip>             # cloud-init creates the ubuntu user if the image has none
+ssh ubuntu@<instance-ip>
 tail -f /var/log/gpr-setup.log        # wait for "SETUP DONE" (a few minutes: it downloads ~18 GB of weights)
-exit && ssh ubuntu@<instance-ip>      # log in again so the docker group membership applies
+exit
+ssh ubuntu@<instance-ip>              # log in again so the docker group membership applies
+nvidia-smi                            # confirm the GPU is visible (Blackwell: driver 570 or newer)
 cd ~/gpr-currency
 ```
 
-**4. Start the model server.**
+### 4. Start the model server (on the instance)
 
 ```bash
-deploy/serve_vllm.sh                              # Qwen/Qwen3.5-9B on an L40S or H100
-QUANTIZATION=fp8 deploy/serve_vllm.sh             # on a 24 GB L4 (weights fit in half the memory)
-MODEL=Qwen/Qwen3.5-4B deploy/serve_vllm.sh        # a smaller model
-deploy/serve_vllm.sh test                         # send one sample sentiment request
+deploy/serve_vllm.sh                              # Qwen/Qwen3.5-9B, waits until the server is ready
+MAX_NUM_SEQS=256 deploy/serve_vllm.sh             # larger batches on an H100 / RTX 6000 Blackwell
+QUANTIZATION=fp8 deploy/serve_vllm.sh             # on a 24 GB L4
+MODEL=Qwen/Qwen3.5-4B deploy/serve_vllm.sh        # a smaller, faster model
+deploy/serve_vllm.sh test                         # one sample request; should print a JSON score
 deploy/serve_vllm.sh status | logs | stop | restart
 ```
 
-The server exposes an OpenAI-compatible API at `http://127.0.0.1:8000/v1` (model name `qwen`). It listens on localhost only. Run the scoring client on the instance, or reach the server from your laptop through a tunnel: `ssh -L 8000:localhost:8000 ubuntu@<instance-ip>`. To expose it publicly set `BIND=0.0.0.0` **and** `VLLM_API_KEY`. All options (context length, memory fraction, batch size, extra vLLM arguments, image tag, ...) are environment variables listed at the top of `deploy/serve_vllm.sh`.
+The server runs in Docker (restarted automatically), exposes an OpenAI-compatible API at `http://127.0.0.1:8000/v1` under the model name `qwen`, and listens on **localhost only**. All options (context length, memory fraction, batch size, extra vLLM arguments, image tag, ...) are environment variables documented at the top of `deploy/serve_vllm.sh`. If it fails to start, `deploy/serve_vllm.sh logs` shows why; typical causes are an old NVIDIA driver, a vLLM image that does not support the GPU (try `VLLM_IMAGE=<newer tag>`), or too little memory (smaller `MAX_MODEL_LEN`, or `EXTRA_ARGS="--limit-mm-per-prompt {}"` for the multimodal model; check the vLLM docs for flags your image supports).
 
-Qwen3.5 has a thinking mode; clients should send `"chat_template_kwargs": {"enable_thinking": false}` with each request (the `test` command does). The Qwen3.5 models are multimodal; if vLLM runs short of memory on the 24 GB L4, try `EXTRA_ARGS="--limit-mm-per-prompt {}"` or a smaller `MAX_MODEL_LEN` (check the vLLM docs for the flags your image version supports).
+### 5. Run the scoring client
 
-**5. Shut the instance down when finished.** GPU instances are billed per minute while they exist; delete the instance (or check Scaleway's docs on whether a stopped GPU instance is still billed) so it does not keep running.
+**Option A (recommended): client on your laptop, through an SSH tunnel.** The excerpts are built from the data you already have locally, results land directly in your local `data/processed/`, and the instance needs no data download. Keep the tunnel and the Mac awake while it runs.
 
-The instance only hosts the model: once it is up, run the batch client on it (see [Scoring sentiment with a model server](#scoring-sentiment-with-a-model-server)).
+```bash
+# laptop, terminal 1: the tunnel (leave it open)
+ssh -N -L 8000:localhost:8000 -o ServerAliveInterval=30 ubuntu@<instance-ip>
+
+# laptop, terminal 2: the client (needs data/raw from download_data.py, or an existing data/processed/sentiment_inputs.jsonl)
+cd gpr-currency
+curl -s localhost:8000/health && echo OK                                     # tunnel and server reachable
+uv run python scripts/score_sentiment.py --limit 20                          # smoke test
+head -5 data/processed/sentiment_scores.csv
+caffeinate -i uv run python scripts/score_sentiment.py --concurrency 128     # full run (caffeinate keeps the Mac awake)
+```
+
+**Option B: client on the instance** (more robust for very long runs; run it in `tmux` so it survives a disconnect).
+
+```bash
+# on the instance, in ~/gpr-currency
+uv run python scripts/download_data.py                  # the raw data is not in git (~620 MB)
+uv run python scripts/score_sentiment.py --limit 20     # smoke test
+tmux new -s score
+uv run python scripts/score_sentiment.py --concurrency 128
+# detach: Ctrl-b then d          reattach: tmux attach -t score
+
+# afterwards, from your laptop:
+scp ubuntu@<instance-ip>:gpr-currency/data/processed/sentiment_{scores.csv,monthly.csv,scores.jsonl} data/processed/
+```
+
+Either way the run is **resumable**: if it is interrupted (Ctrl-C, a dropped tunnel, a reboot), run the same command again and it continues with the unscored articles. Add `--no-reason` for a faster, score-only run. Monitor the GPU with `watch -n 2 nvidia-smi` and the server with `deploy/serve_vllm.sh logs` on the instance.
+
+### 6. Delete the instance
+
+GPU instances are billed per minute while they exist. When the run has finished and the results are on your laptop, delete the instance in the Scaleway console (do not rely on stopping it: check Scaleway's docs on whether a stopped GPU instance is still billed).
+
+Qwen3.5 has a thinking mode; the client switches it off with `chat_template_kwargs` on every request (the `test` command does too). To expose the server publicly instead of tunnelling, set `BIND=0.0.0.0` **and** `VLLM_API_KEY` (not recommended).
 
 ## Scoring sentiment with a model server
 
@@ -236,7 +302,7 @@ uv run python scripts/score_sentiment.py --no-reason      # score only: fewer ou
 uv run python scripts/score_sentiment.py --summary-only   # just rebuild the CSVs from the scores so far
 ```
 
-It runs three stages, each skipped if its output exists: (1) build `data/processed/sentiment_inputs.jsonl` from the raw data (needs `download_data.py`; ~1.5 min); (2) score into `data/processed/sentiment_scores.jsonl`, appending as it goes; (3) write `data/processed/sentiment_scores.csv` (`article_id`, `date`, `sentiment_score`, `reason`) and `data/processed/sentiment_monthly.csv` (`month`, `articles_scored`, `mean_sentiment`, `share_negative` = scores 1-2, `share_positive` = scores 4-5). **It is resumable:** if it stops, run it again and it continues with the unscored articles; failed articles are retried on the next run.
+It runs three stages, each skipped if its output exists: (1) build `data/processed/sentiment_inputs.jsonl` from the raw data (needs `download_data.py`; ~1.5 min); (2) score into `data/processed/sentiment_scores.jsonl`, appending as it goes; (3) write `data/processed/sentiment_scores.csv` (`article_id`, `date`, `sentiment_score`, `reason`) and `data/processed/sentiment_monthly.csv` (`month`, `articles_scored`, `mean_sentiment`, `share_negative` = scores 1-2, `share_positive` = scores 4-5). **It is resumable:** every result is written to disk as soon as it arrives, so if it stops for any reason (Ctrl-C, a dropped tunnel, a crash) you run the same command again and it continues with the unscored articles; failed articles are retried on the next run. Ctrl-C stops within a second, writes the CSVs for what is done so far, and exits with code 130. A line cut off by a hard kill is skipped on the next run.
 
 Options: `--base-url` (default `http://127.0.0.1:8000/v1`), `--model` (default `qwen`, the vLLM `SERVED_MODEL_NAME`), `--api-key` (or `VLLM_API_KEY`), `--concurrency` (64), `--limit`, `--no-reason`, `--max-tokens`, `--timeout`, `--retries`, `--extra-body` (JSON merged into each request), `--context`, `--max-chars`, `--rebuild-inputs`, `--summary-only`, plus path options (`--raw-dir`, `--inputs`, `--out`, `--csv-out`, `--monthly-out`).
 
@@ -247,7 +313,36 @@ uv run python scripts/score_sentiment.py --base-url http://localhost:11434/v1 --
     --extra-body '{"reasoning_effort": "none"}' --concurrency 2 --limit 10
 ```
 
-On the GPU instance, run `uv run python scripts/download_data.py` first (the raw data is not in git), start the server with `deploy/serve_vllm.sh`, then run the client. With the default `--concurrency 64` and the server's `MAX_NUM_SEQS=128`, the GPU stays busy.
+To run it against a model on a cloud GPU, follow [Cloud GPU deployment (Scaleway)](#cloud-gpu-deployment-scaleway). The default `--concurrency 64` suits the server's default `MAX_NUM_SEQS=128`; use `--concurrency 128` with `MAX_NUM_SEQS=256`.
+
+## Reviewing the scores with a second pass
+
+`scripts/review_sentiment.py` audits the scores. For each scored article, a reviewer model sees the same excerpt plus the first annotator's score and reason, and answers: does it agree, what score would it give, and why (if it disagrees, what the first annotator got wrong). It runs against the same kind of server as the scoring client, takes `sentiment_scores.jsonl` as input, and is resumable in the same way.
+
+```bash
+uv run python scripts/review_sentiment.py --limit 20        # smoke test
+uv run python scripts/review_sentiment.py                   # review every scored article
+uv run python scripts/review_sentiment.py --only-extreme    # skip the neutral 3s (about 40% of articles)
+uv run python scripts/review_sentiment.py --summary-only    # rebuild the CSV and print the summary
+```
+
+Outputs: `data/processed/sentiment_reviews.jsonl` (appended as it goes) and `data/processed/sentiment_reviews.csv` (`article_id`, `date`, `score`, `agree`, `revised_score`, `explanation`, `reason`). It prints the agreement rate, the agreement by original score, the direction of the disagreements and an original-by-revised score table. The review is a second opinion from a language model, not ground truth: it does not change `sentiment_scores.csv` or the dashboard.
+
+**Use an independent reviewer if you can.** A model reviewing its own output tends to agree too readily or to be sceptical in a systematic way (in a 8-article test with Qwen 4B it disagreed almost every time and pulled scores towards 3). For a more independent check, serve a different or larger model (`MODEL=<hf id> SERVED_MODEL_NAME=reviewer deploy/serve_vllm.sh restart`) and pass `--base-url` and `--model reviewer`. Options match `score_sentiment.py` (`--base-url`, `--model`, `--concurrency`, `--limit`, `--max-tokens` (150), `--extra-body`, ...) plus `--only-extreme`, `--scores` and `--out`/`--csv-out`. The review costs about as much GPU time as the scoring pass, since the prompt is the same excerpt plus a short explanation.
+
+## Arbitrating disagreements (third pass)
+
+`scripts/arbitrate_sentiment.py` settles the articles where the reviewer disagreed. The arbiter model sees the excerpt, both scores and both reasonings (the first annotator's reason and the reviewer's explanation) and returns a `final_score`, plus an explanation of which reasoning holds up. It may side with either or choose a different score. The `decision` column (`first`, `second`, `neither`) is derived from the numbers, so it cannot contradict the score. Articles where the reviewer agreed keep their score.
+
+```bash
+uv run python scripts/arbitrate_sentiment.py --limit 20       # smoke test
+uv run python scripts/arbitrate_sentiment.py                  # all disagreements
+uv run python scripts/arbitrate_sentiment.py --summary-only   # rebuild the CSVs only
+```
+
+Outputs: `data/processed/sentiment_arbitrations.jsonl` (resumable), `data/processed/sentiment_final.csv` (every article: `first_score`, `reviewer_score`, `final_score`, `source` = `first_agreed` / `arbitrated` / `first_unreviewed`, `decision`, `arbiter_explanation`) and `data/processed/sentiment_final_monthly.csv`, which has the same columns as `sentiment_monthly.csv` but computed from the final scores. Run it only after `review_sentiment.py` has finished: articles not yet reviewed or arbitrated keep their first score (`first_unreviewed`), and the summary says how many disagreements are still pending. Options match the other clients (`--base-url`, `--model`, `--concurrency`, `--limit`, `--max-tokens`, `--extra-body`, `--reviews`, `--out`, `--csv-out`, `--monthly-out`).
+
+The pipeline is therefore: `score_sentiment.py` -> `review_sentiment.py` -> `arbitrate_sentiment.py`. Using a different model for each pass gives the most independent result; the arbiter is still a language model, not ground truth. The dashboard still reads `sentiment_monthly.csv` (first-pass scores); use `build_dashboard.py --sentiment data/processed/sentiment_final_monthly.csv` to show the final scores.
 
 ## Repository layout
 
@@ -264,6 +359,9 @@ scripts/
   sentiment_benchmark.py                   local-LLM sentiment benchmark
   sentiment_common.py                      shared sentiment prompt and JSON schema
   score_sentiment.py                       batch sentiment scoring against a vLLM/OpenAI-compatible server
+  weekly_aggregates.py                     weekly counts and sentiment from the per-article CSVs
+  review_sentiment.py                      second pass: a model agrees/disagrees with each score and says why
+  arbitrate_sentiment.py                   third pass: an arbiter settles disagreements and gives the final score
 deploy/                                    cloud-init.yaml + serve_vllm.sh for a Scaleway GPU box
 reference/sanctions_events.csv             hand-maintained events timeline
 docs/                                      committed outputs: dashboard and alias glossary
