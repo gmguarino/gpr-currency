@@ -35,7 +35,7 @@ write_files:
       # ------------------------------ CONFIG ------------------------------
       REPO_URL="https://github.com/gmguarino/gpr-currency.git"
       BRANCH="sentiment-analysis"
-      TARGET_DIR="/root/gpr-currency"
+      TARGET_DIR="/home/ubuntu/gpr-currency"
       MODEL="Qwen/Qwen3.5-9B"                      # weights to pre-download ("" to skip)
       VLLM_IMAGE="vllm/vllm-openai:latest"         # image to pre-pull ("" to skip)
       # --------------------------------------------------------------------
