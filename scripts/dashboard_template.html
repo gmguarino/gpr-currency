@@ -223,19 +223,19 @@ const METRICS = {
   ...{
     sentiment: {
       avail: hasSent, name: 'Sentiment (1–5)', domain: [1, 5], domainTicks: [1, 2, 3, 4, 5],
-      desc: 'Average tone towards the USA of the month\'s USA-mentioning articles, scored by a Qwen model from 1 (completely negative) to 5 (completely positive); 3 is neutral. Scores come from an excerpt around the mentions and are model estimates, not ground truth.',
+      desc: 'Average view of the USA conveyed by the month\'s relevant USA-mentioning articles (those where the USA is a real subject of economic, sanctions or geopolitical content), scored by a Qwen model from 1 (hostile: sanctions, tariffs, blame) to 5 (very favourable); 3 is neutral. Scores come from an excerpt around the mentions and are model estimates, not ground truth.',
       val: i => D.mean_sentiment[i],
       roll: i => wsum(D.mean_sentiment, i) / sum(D.articles_scored, i - (W - 1), i + 1),
       fmt: v => v.toFixed(2), tick: v => v,
     },
     negative: {
-      avail: hasSent, name: 'Share negative', desc: 'Percentage of scored articles in a month with a score of 1 or 2 (negative towards the USA).',
+      avail: hasSent, name: 'Share unfavourable', desc: 'Percentage of scored articles in a month with a score of 1 or 2 (hostile or critical towards the USA).',
       val: i => D.share_negative[i] * 100,
       roll: i => wsum(D.share_negative, i) / sum(D.articles_scored, i - (W - 1), i + 1) * 100,
       fmt: v => v.toFixed(1) + '%', tick: v => v + '%',
     },
     positive: {
-      avail: hasSent, name: 'Share positive', desc: 'Percentage of scored articles in a month with a score of 4 or 5 (positive towards the USA).',
+      avail: hasSent, name: 'Share favourable', desc: 'Percentage of scored articles in a month with a score of 4 or 5 (favourable towards the USA).',
       val: i => D.share_positive[i] * 100,
       roll: i => wsum(D.share_positive, i) / sum(D.articles_scored, i - (W - 1), i + 1) * 100,
       fmt: v => v.toFixed(1) + '%', tick: v => v + '%',

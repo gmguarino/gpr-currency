@@ -1,9 +1,11 @@
-"""Score the sentiment towards the USA (1-5) of every USA-mentioning article, in batches.
+"""Score the view of the USA (1-5) and the relevance of every USA-mentioning article, in batches.
 
 Sends each article's excerpt (from before the first to after the last entity mention, see
 usa_mentions.mention_window) to an OpenAI-compatible chat server such as the vLLM server
 started by deploy/serve_vllm.sh. Many requests are kept in flight at once, so vLLM batches
-them. 1 = completely negative, 5 = completely positive.
+them. Each article gets a `relevant` flag (irrelevant ones are excluded from the monthly summary) and
+a 1-5 score of the view of the US it conveys: 1 = hostile ... 5 = very favourable, 3 = neutral. The full
+wording is in sentiment_common.py.
 
 Stages (each is skipped if its output already exists):
   1. build the inputs   data/raw/*.jsonl.gz  ->  data/processed/sentiment_inputs.jsonl
@@ -33,7 +35,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from sentiment_common import SCHEMA, SCHEMA_SCORE_ONLY, build_messages
+from sentiment_common import PROMPT_VERSION, SCHEMA, SCHEMA_SCORE_ONLY, build_messages
 from usa_mentions import count_mentions, iter_articles, mention_window
 
 
@@ -71,6 +73,16 @@ def read_jsonl(path: Path) -> list[dict]:
     if bad:
         print(f"  warning: skipped {bad} unreadable line(s) in {path} (likely cut off by an interruption)")
     return rows
+
+
+def check_prompt_version(rows: list[dict], path: Path) -> None:
+    """Refuse to continue on results made with a different prompt/scale (rows without a version are the original one)."""
+    old = {r.get("prompt", "attitude-v1") for r in rows} - {PROMPT_VERSION}
+    if old:
+        raise SystemExit(
+            f"{path} holds results made with another prompt version ({', '.join(sorted(old))}; current: {PROMPT_VERSION}). "
+            "Mixing scales would make them meaningless: move the old sentiment_* files out of data/processed/ "
+            "(e.g. into data/processed/v1/) or choose a new --out, then run again.")
 
 
 def ensure_trailing_newline(path: Path) -> None:
@@ -115,7 +127,8 @@ def chat_json(a: argparse.Namespace, messages: list[dict], schema: dict, max_tok
 
 def score_one(art: dict, a: argparse.Namespace) -> dict:
     schema = SCHEMA if a.reason else SCHEMA_SCORE_ONLY
-    fail = {"id": art["id"], "date": art["date"], "score": None, "reason": "", "model": a.model}
+    fail = {"id": art["id"], "date": art["date"], "relevant": None, "score": None, "reason": "", "model": a.model,
+            "prompt": PROMPT_VERSION}
     parsed, resp, err = chat_json(a, build_messages(art["title"], art["excerpt"], a.reason), schema, a.max_tokens)
     if parsed is None:
         return {**fail, "error": err}
@@ -123,11 +136,14 @@ def score_one(art: dict, a: argparse.Namespace) -> dict:
         score = int(parsed["score"])
         if not 1 <= score <= 5:
             raise ValueError(f"score out of range: {score}")
+        if not isinstance(parsed["relevant"], bool):
+            raise ValueError(f"relevant is not a boolean: {parsed['relevant']!r}")
     except (KeyError, TypeError, ValueError) as e:
         return {**fail, "error": f"{type(e).__name__}: {e}"}
     usage = resp.get("usage", {})
-    return {"id": art["id"], "date": art["date"], "score": score, "reason": str(parsed.get("reason", "")),
-            "model": a.model, "tokens_in": usage.get("prompt_tokens"), "tokens_out": usage.get("completion_tokens")}
+    return {"id": art["id"], "date": art["date"], "relevant": parsed["relevant"], "score": score,
+            "reason": str(parsed.get("reason", "")),
+            "model": a.model, "prompt": PROMPT_VERSION, "tokens_in": usage.get("prompt_tokens"), "tokens_out": usage.get("completion_tokens")}
 
 
 def summarise(scores_path: Path, csv_out: Path, monthly_out: Path) -> None:
@@ -138,11 +154,14 @@ def summarise(scores_path: Path, csv_out: Path, monthly_out: Path) -> None:
     df = pd.DataFrame(rows).drop_duplicates("id", keep="last")  # latest attempt per article wins
     done = df[df["score"].notna()].copy()
     done["score"] = done["score"].astype(int)
+    done["relevant"] = done["relevant"].fillna(True).astype(bool)
     done = done.sort_values("id")
-    done[["id", "date", "score", "reason"]].rename(
+    done[["id", "date", "relevant", "score", "reason"]].rename(
         columns={"id": "article_id", "score": "sentiment_score"}).to_csv(csv_out, index=False)
-    done["month"] = done["date"].str[:7]
-    monthly = done.groupby("month").agg(
+    # Irrelevant articles (the US is only incidental) are excluded from the monthly aggregates
+    rel = done[done["relevant"]].copy()
+    rel["month"] = rel["date"].str[:7]
+    monthly = rel.groupby("month").agg(
         articles_scored=("score", "size"),
         mean_sentiment=("score", "mean"),
         share_negative=("score", lambda s: (s <= 2).mean()),
@@ -150,8 +169,9 @@ def summarise(scores_path: Path, csv_out: Path, monthly_out: Path) -> None:
     ).round(4)
     monthly.to_csv(monthly_out)
     failed = len(df) - len(done)
-    print(f"Summary: {len(done)} scored, {failed} failed (re-run to retry). "
-          f"Mean score {done['score'].mean():.2f}. Wrote {csv_out} and {monthly_out}")
+    print(f"Summary: {len(done)} scored, {failed} failed (re-run to retry). {int((~done['relevant']).sum())} judged "
+          f"irrelevant and excluded from the monthly file; mean score of the {len(rel)} relevant: "
+          f"{rel['score'].mean():.2f}. Wrote {csv_out} and {monthly_out}")
 
 
 def main() -> None:
@@ -186,7 +206,9 @@ def main() -> None:
     if a.rebuild_inputs or not a.inputs.exists():
         build_inputs(a.raw_dir, a.inputs, a.context, a.max_chars)
     articles = read_jsonl(a.inputs)
-    done = {r["id"] for r in read_jsonl(a.out) if r.get("score") is not None}
+    existing = read_jsonl(a.out)
+    check_prompt_version(existing, a.out)
+    done = {r["id"] for r in existing if r.get("score") is not None}
     todo = [x for x in articles if x["id"] not in done]
     if a.limit:
         todo = todo[: a.limit]

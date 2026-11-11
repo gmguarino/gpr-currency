@@ -35,13 +35,17 @@ def sentiment_weekly(a: argparse.Namespace) -> pd.DataFrame | None:
     if a.sentiment == "none":
         return None
     use_final = a.sentiment == "final" or (a.sentiment == "auto" and final.exists())
-    path, col = (final, "final_score") if use_final else (first, "sentiment_score")
+    path, col, rel = (final, "final_score", "final_relevant") if use_final else (first, "sentiment_score", "relevant")
     if not path.exists():
         print(f"No sentiment file at {path}: skipping sentiment")
         return None
-    s = pd.read_csv(path, usecols=["date", col]).dropna(subset=[col])
+    s = pd.read_csv(path).dropna(subset=[col])
+    n_all = len(s)
+    if rel in s.columns:  # articles judged irrelevant are excluded from the sentiment aggregates
+        s = s[s[rel].astype(bool)]
+    s = s[["date", col]].copy()
     s["week_start"] = week_start(s["date"])
-    print(f"Sentiment from {path} ({len(s)} articles)")
+    print(f"Sentiment from {path} ({len(s)} relevant of {n_all} scored articles)")
     return s.groupby("week_start")[col].agg(
         articles_scored="size",
         mean_sentiment="mean",
