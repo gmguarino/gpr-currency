@@ -28,15 +28,16 @@ from pathlib import Path
 
 import pandas as pd
 
-from sentiment_common import SCHEMA_REVIEW, build_review_messages
-from score_sentiment import chat_json, ensure_trailing_newline, read_jsonl
+from sentiment_common import PROMPT_VERSION, SCHEMA_REVIEW, build_review_messages, same_verdict
+from score_sentiment import chat_json, check_prompt_version, ensure_trailing_newline, read_jsonl
 
 
 def review_one(art: dict, first: dict, a: argparse.Namespace) -> dict:
-    out = {"id": art["id"], "date": art["date"], "score": first["score"], "reason": first.get("reason", ""),
-           "reviewer": a.model}
+    first_rel = first.get("relevant", True)
+    out = {"id": art["id"], "date": art["date"], "relevant": first_rel, "score": first["score"],
+           "reason": first.get("reason", ""), "reviewer": a.model, "prompt": PROMPT_VERSION}
     parsed, resp, err = chat_json(
-        a, build_review_messages(art["title"], art["excerpt"], first["score"], first.get("reason", "")),
+        a, build_review_messages(art["title"], art["excerpt"], first["score"], first.get("reason", ""), first_rel),
         SCHEMA_REVIEW, a.max_tokens, name="review")
     if parsed is None:
         return {**out, "agree": None, "error": err}
@@ -44,13 +45,16 @@ def review_one(art: dict, first: dict, a: argparse.Namespace) -> dict:
         revised = int(parsed["revised_score"])
         if not 1 <= revised <= 5:
             raise ValueError(f"revised_score out of range: {revised}")
-        agree = bool(parsed["agree"])
+        revised_rel = parsed["revised_relevant"]
+        if not isinstance(revised_rel, bool):
+            raise ValueError(f"revised_relevant is not a boolean: {revised_rel!r}")
     except (KeyError, TypeError, ValueError) as e:
         return {**out, "agree": None, "error": f"{type(e).__name__}: {e}"}
-    # An "agree" that carries a different score is contradictory: trust the score
-    if agree and revised != first["score"]:
-        agree = False
-    return {**out, "agree": agree, "revised_score": revised, "explanation": str(parsed.get("explanation", ""))}
+    # Decide from the verdicts themselves, so "agree" cannot contradict them (two "irrelevant" verdicts agree
+    # whatever the scores; otherwise relevance and score must both match)
+    agree = same_verdict(first_rel, first["score"], revised_rel, revised)
+    return {**out, "agree": agree, "revised_relevant": revised_rel, "revised_score": revised,
+            "explanation": str(parsed.get("explanation", ""))}
 
 
 def summarise(path: Path, csv_out: Path) -> None:
@@ -65,16 +69,22 @@ def summarise(path: Path, csv_out: Path) -> None:
         return
     done["agree"] = done["agree"].astype(bool)
     done["revised_score"] = done["revised_score"].astype(int)
+    done["relevant"] = done["relevant"].fillna(True).astype(bool)
+    done["revised_relevant"] = done["revised_relevant"].astype(bool)
     done = done.sort_values("id")
-    done[["id", "date", "score", "agree", "revised_score", "explanation", "reason"]].rename(
+    done[["id", "date", "relevant", "score", "agree", "revised_relevant", "revised_score", "explanation", "reason"]].rename(
         columns={"id": "article_id"}).to_csv(csv_out, index=False)
 
     dis = done[~done["agree"]]
     print(f"Reviewed {len(done)} articles ({len(df) - len(done)} failed): "
           f"{done['agree'].mean():.1%} agree, {len(dis)} disagree. Wrote {csv_out}")
+    flips = done[done["relevant"] != done["revised_relevant"]]
+    print(f"Relevance: first pass says irrelevant for {int((~done['relevant']).sum())}, reviewer for "
+          f"{int((~done['revised_relevant']).sum())}; they differ on {len(flips)}")
     print("Agreement by original score:")
     print(done.groupby("score")["agree"].agg(n="size", agree="mean").round(3).to_string())
     if len(dis):
+        dis = dis[dis["relevant"] & dis["revised_relevant"]]  # score shifts only make sense when both say relevant
         d = (dis["revised_score"] - dis["score"])
         print(f"Disagreements: reviewer is more positive in {(d > 0).sum()}, more negative in {(d < 0).sum()}; "
               f"mean shift {d.mean():+.2f}; mean score {done['score'].mean():.2f} -> {done['revised_score'].mean():.2f}")
@@ -108,11 +118,15 @@ def main() -> None:
     if not a.scores.exists():
         raise SystemExit(f"{a.scores} not found: run scripts/score_sentiment.py first")
     articles = {x["id"]: x for x in read_jsonl(a.inputs)}
+    scores = read_jsonl(a.scores)
+    existing = read_jsonl(a.out)
+    check_prompt_version(scores, a.scores)  # the scores being reviewed must come from the current prompt
+    check_prompt_version(existing, a.out)
     firsts = {}
-    for r in read_jsonl(a.scores):
+    for r in scores:
         if r.get("score") is not None:
             firsts[r["id"]] = r  # latest successful score per article
-    done = {r["id"] for r in read_jsonl(a.out) if r.get("agree") is not None}
+    done = {r["id"] for r in existing if r.get("agree") is not None}
     todo = [(articles[i], f) for i, f in sorted(firsts.items())
             if i in articles and i not in done and not (a.only_extreme and f["score"] == 3)]
     if a.limit:

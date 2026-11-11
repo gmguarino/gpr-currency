@@ -1,8 +1,8 @@
-"""Benchmark local Ollama models on scoring sentiment towards the USA (1-5).
+"""Benchmark local Ollama models on scoring the view of the USA (1-5, see sentiment_common.SCALE) and relevance.
 
 Each article is cut to an excerpt running from before its first entity mention to after its
 last (see usa_mentions.mention_window). Draws a reproducible random sample of articles that mention the USA, asks each model for a
-1-5 score (1 = completely negative, 5 = completely positive) plus a short reason, and
+1-5 score (1 = hostile, 5 = very favourable) plus a short reason, and
 reports latency, token throughput, a projection for the full corpus, and how much the
 models agree with each other. Raw results go to data/processed/sentiment_benchmark.jsonl.
 

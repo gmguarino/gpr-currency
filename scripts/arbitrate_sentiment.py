@@ -29,28 +29,36 @@ from pathlib import Path
 
 import pandas as pd
 
-from sentiment_common import SCHEMA_ARBITER, build_arbiter_messages
-from score_sentiment import chat_json, ensure_trailing_newline, read_jsonl
+from sentiment_common import PROMPT_VERSION, SCHEMA_ARBITER, build_arbiter_messages, same_verdict
+from score_sentiment import chat_json, check_prompt_version, ensure_trailing_newline, read_jsonl
 
 
 def arbitrate_one(art: dict, first: dict, rev: dict, a: argparse.Namespace) -> dict:
-    out = {"id": art["id"], "date": art["date"], "first_score": first["score"],
-           "reviewer_score": rev["revised_score"], "arbiter": a.model}
+    first_rel = first.get("relevant", True)
+    out = {"id": art["id"], "date": art["date"], "first_relevant": first_rel, "first_score": first["score"],
+           "reviewer_relevant": rev["revised_relevant"], "reviewer_score": rev["revised_score"],
+           "arbiter": a.model, "prompt": PROMPT_VERSION}
     parsed, resp, err = chat_json(
-        a, build_arbiter_messages(art["title"], art["excerpt"], first["score"], first.get("reason", ""),
-                                  rev["revised_score"], rev.get("explanation", "")),
+        a, build_arbiter_messages(art["title"], art["excerpt"], first_rel, first["score"], first.get("reason", ""),
+                                  rev["revised_relevant"], rev["revised_score"], rev.get("explanation", "")),
         SCHEMA_ARBITER, a.max_tokens, name="arbitration")
     if parsed is None:
-        return {**out, "final_score": None, "error": err}
+        return {**out, "final_relevant": None, "final_score": None, "error": err}
     try:
         final = int(parsed["final_score"])
         if not 1 <= final <= 5:
             raise ValueError(f"final_score out of range: {final}")
+        final_rel = parsed["final_relevant"]
+        if not isinstance(final_rel, bool):
+            raise ValueError(f"final_relevant is not a boolean: {final_rel!r}")
     except (KeyError, TypeError, ValueError) as e:
-        return {**out, "final_score": None, "error": f"{type(e).__name__}: {e}"}
-    # Derive the decision from the numbers so it cannot contradict the score
-    decision = "first" if final == first["score"] else "second" if final == rev["revised_score"] else "neither"
-    return {**out, "final_score": final, "decision": decision, "explanation": str(parsed.get("explanation", ""))}
+        return {**out, "final_relevant": None, "final_score": None, "error": f"{type(e).__name__}: {e}"}
+    # Derive the decision from the verdicts so it cannot contradict them
+    decision = ("first" if same_verdict(final_rel, final, first_rel, first["score"])
+                else "second" if same_verdict(final_rel, final, rev["revised_relevant"], rev["revised_score"])
+                else "neither")
+    return {**out, "final_relevant": final_rel, "final_score": final, "decision": decision,
+            "explanation": str(parsed.get("explanation", ""))}
 
 
 def summarise(a: argparse.Namespace) -> None:
@@ -64,30 +72,34 @@ def summarise(a: argparse.Namespace) -> None:
     rows = []
     for i, f in sorted(firsts.items()):
         rev, arb = reviews.get(i), arbs.get(i)
+        frel = f.get("relevant", True)
         if rev is None:
-            src, final, rscore = "first_unreviewed", f["score"], None
+            src, final, fin_rel, rscore, rrel = "first_unreviewed", f["score"], frel, None, None
         elif rev["agree"]:
-            src, final, rscore = "first_agreed", f["score"], rev["revised_score"]
+            src, final, fin_rel, rscore, rrel = "first_agreed", f["score"], frel, rev["revised_score"], rev["revised_relevant"]
         elif arb is not None:
-            src, final, rscore = "arbitrated", arb["final_score"], rev["revised_score"]
-        else:
-            src, final, rscore = "first_unreviewed", f["score"], rev["revised_score"]  # disagreement not yet arbitrated
-        rows.append({"article_id": i, "date": f["date"], "first_score": f["score"], "reviewer_score": rscore,
-                     "final_score": final, "source": src,
+            src, final, fin_rel, rscore, rrel = "arbitrated", arb["final_score"], arb["final_relevant"], rev["revised_score"], rev["revised_relevant"]
+        else:  # disagreement not yet arbitrated: keep the first verdict
+            src, final, fin_rel, rscore, rrel = "first_unreviewed", f["score"], frel, rev["revised_score"], rev["revised_relevant"]
+        rows.append({"article_id": i, "date": f["date"], "first_relevant": frel, "first_score": f["score"],
+                     "reviewer_relevant": rrel, "reviewer_score": rscore,
+                     "final_relevant": fin_rel, "final_score": final, "source": src,
                      "decision": arb["decision"] if src == "arbitrated" else "",
                      "arbiter_explanation": arb["explanation"] if src == "arbitrated" else ""})
     df = pd.DataFrame(rows)
     df["reviewer_score"] = df["reviewer_score"].astype("Int64")  # integers, blank when unreviewed
     df.to_csv(a.csv_out, index=False)
-    df["month"] = df["date"].str[:7]
-    df.groupby("month").agg(
+    rel = df[df["final_relevant"].astype(bool)].copy()  # irrelevant articles are excluded from the monthly file
+    rel["month"] = rel["date"].str[:7]
+    rel.groupby("month").agg(
         articles_scored=("final_score", "size"),
         mean_sentiment=("final_score", "mean"),
         share_negative=("final_score", lambda s: (s <= 2).mean()),
         share_positive=("final_score", lambda s: (s >= 4).mean()),
     ).round(4).to_csv(a.monthly_out)
 
-    print(f"Wrote {a.csv_out} and {a.monthly_out} ({len(df)} articles)")
+    print(f"Wrote {a.csv_out} and {a.monthly_out} ({len(df)} articles, {len(df) - len(rel)} judged irrelevant "
+          f"and excluded from the monthly file)")
     print(df["source"].value_counts().to_string())
     pending = ((df["source"] == "first_unreviewed") & df["reviewer_score"].notna()).sum()
     if pending:
@@ -95,8 +107,9 @@ def summarise(a: argparse.Namespace) -> None:
     arb_df = df[df["source"] == "arbitrated"]
     if len(arb_df):
         print("Arbiter sided with: " + ", ".join(f"{k} {v}" for k, v in arb_df["decision"].value_counts().items()))
-        print(f"Mean score over all articles: first {df['first_score'].mean():.2f} -> final {df['final_score'].mean():.2f}; "
-              f"{(df['final_score'] != df['first_score']).mean():.1%} of articles changed score")
+        changed = (df["final_score"] != df["first_score"]) | (df["final_relevant"] != df["first_relevant"])
+        print(f"Mean score of relevant articles: first {df[df['first_relevant'].astype(bool)]['first_score'].mean():.2f} -> "
+              f"final {rel['final_score'].mean():.2f}; {changed.mean():.1%} of articles changed verdict")
 
 
 def main() -> None:
@@ -126,9 +139,12 @@ def main() -> None:
         raise SystemExit(f"{a.reviews} not found: run scripts/review_sentiment.py first")
 
     articles = {x["id"]: x for x in read_jsonl(a.inputs)}
-    firsts = {r["id"]: r for r in read_jsonl(a.scores) if r.get("score") is not None}
-    disputed = {r["id"]: r for r in read_jsonl(a.reviews) if r.get("agree") is False}
-    done = {r["id"] for r in read_jsonl(a.out) if r.get("final_score") is not None}
+    scores, reviews, existing = read_jsonl(a.scores), read_jsonl(a.reviews), read_jsonl(a.out)
+    for rows, path in ((scores, a.scores), (reviews, a.reviews), (existing, a.out)):
+        check_prompt_version(rows, path)
+    firsts = {r["id"]: r for r in scores if r.get("score") is not None}
+    disputed = {r["id"]: r for r in reviews if r.get("agree") is False}
+    done = {r["id"] for r in existing if r.get("final_score") is not None}
     todo = [(articles[i], firsts[i], r) for i, r in sorted(disputed.items())
             if i in articles and i in firsts and i not in done]
     if a.limit:
