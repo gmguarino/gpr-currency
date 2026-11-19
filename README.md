@@ -10,6 +10,7 @@ How often, and in what tone, does China's *People's Daily* (人民日报) talk a
 - [The scripts](#the-scripts)
 - [Outputs](#outputs)
 - [The dashboard](#the-dashboard)
+- [The scoring scale](#the-scoring-scale)
 - [Reviewing the scores with a second pass](#reviewing-the-scores-with-a-second-pass)
 - [Arbitrating disagreements (third pass)](#arbitrating-disagreements-third-pass)
 - [Customising](#customising)
@@ -97,7 +98,7 @@ uv run python scripts/export_aliases.py
 
 ### `build_dashboard.py`: HTML dashboard
 
-Embeds the monthly CSV and `reference/sanctions_events.csv` into `scripts/dashboard_template.html` and writes the standalone `docs/usa_mentions_dashboard.html` (no server, libraries or network needed). If `data/processed/sentiment_monthly.csv` exists (from `score_sentiment.py`) it is merged in too, adding the **Sentiment (1–5)**, **Share negative** and **Share positive** views and a mean-sentiment tile (without a sentiment file those views are simply absent). The sentiment file defaults to `sentiment_final_monthly.csv` (final scores after the review and arbitration passes) if it exists, otherwise `sentiment_monthly.csv` (first pass); `--sentiment PATH` overrides this. If `data/processed/usa_mentions_weekly.csv` exists (from `weekly_aggregates.py`; `--weekly PATH` to override) the dashboard also gets a **Monthly / Weekly** toggle; run `weekly_aggregates.py` before `build_dashboard.py` so both use the same sentiment scores. Rolling averages are weighted by the number of articles scored. Re-run it whenever the monthly CSV, the events file or the template changes. **Edit the template, not the generated HTML.**
+Embeds the monthly CSV and `reference/sanctions_events.csv` into `scripts/dashboard_template.html` and writes the standalone `docs/usa_mentions_dashboard.html` (no server, libraries or network needed). If `data/processed/sentiment_monthly.csv` exists (from `score_sentiment.py`) it is merged in too, adding the **Sentiment (1–5)**, **Share unfavourable** and **Share favourable** views and a mean-sentiment tile (without a sentiment file those views are simply absent). The sentiment file defaults to `sentiment_final_monthly.csv` (final scores after the review and arbitration passes) if it exists, otherwise `sentiment_monthly.csv` (first pass); `--sentiment PATH` overrides this. If `data/processed/usa_mentions_weekly.csv` exists (from `weekly_aggregates.py`; `--weekly PATH` to override) the dashboard also gets a **Monthly / Weekly** toggle; run `weekly_aggregates.py` before `build_dashboard.py` so both use the same sentiment scores. Rolling averages are weighted by the number of articles scored. Re-run it whenever the monthly CSV, the events file or the template changes. **Edit the template, not the generated HTML.**
 
 ```bash
 uv run python scripts/build_dashboard.py
@@ -178,7 +179,7 @@ Be careful with single-character 美 compounds, which can match unrelated words 
 
 ## Sentiment benchmark
 
-`scripts/sentiment_benchmark.py` compares local Qwen models (via Ollama) on scoring the sentiment of an article towards the United States, from 1 (completely negative) to 5 (completely positive). It reports seconds per article, prompt and generation speed, a projected time for the whole corpus, and how much the models agree. It is a speed and agreement benchmark; it does not yet compute scores for the whole corpus.
+`scripts/sentiment_benchmark.py` compares local Qwen models (via Ollama) on scoring the stance of an article towards the United States in the commercial and sanctions context, from 1 (confrontation) to 5 (strong cooperation); see [The scoring scale](#the-scoring-scale). It reports seconds per article, prompt and generation speed, a projected time for the whole corpus, and how much the models agree. It is a speed and agreement benchmark; it does not yet compute scores for the whole corpus.
 
 Prerequisites: steps 1 and 3 of the quick start, plus Ollama running with the models pulled:
 
@@ -291,9 +292,39 @@ GPU instances are billed per minute while they exist. When the run has finished 
 
 Qwen3.5 has a thinking mode; the client switches it off with `chat_template_kwargs` on every request (the `test` command does too). To expose the server publicly instead of tunnelling, set `BIND=0.0.0.0` **and** `VLLM_API_KEY` (not recommended).
 
+## The scoring scale
+
+The study is about sanctions and economic relations between China and the United States, so the models do not rate generic positive/negative tone. For every article they decide **two things**, using the wording in `scripts/sentiment_common.py` (`FOCUS`, `RELEVANCE`, `SCALE`, `JUDGE`):
+
+**1. Is the article relevant?** It is relevant if the US is a real subject of its economic, commercial, financial, sanctions or geopolitical content, or if it portrays the US or the West as strong, weak, divided, failing or in decline, or if an American official, scholar or outlet comments on the economy, trade or geopolitics. It is **not** relevant if the US is only incidental: a venue or a stop on an itinerary, a name in passing, an American quoted about something unrelated, sport, culture, an accident or a disaster. **Irrelevant articles are excluded** from all sentiment aggregates (they stay in `sentiment_scores.csv` and `sentiment_final.csv` with `relevant = False`, and in the mention counts, which measure attention only).
+
+**2. What view of the US does it convey?** The score judges the view of the United States itself, **not the relationship, not China, and not whether the news is good or bad**. Praise of China, or criticism of third countries, is not a view of the US. In particular, **an American praising China is not praise of the US**: such an article scores 3 unless it also expresses a view of the US itself.
+
+| Score | Meaning |
+|---|---|
+| 1 | Hostile: the US is portrayed as an aggressor or bully (imposing or threatening sanctions, tariffs, export controls), blamed and condemned |
+| 2 | Critical: the US is criticised or portrayed negatively (in the wrong, hypocritical, divided, weak, failing or in decline) without outright condemnation |
+| 3 | Neutral: no clear view of the US: factual reporting, balanced signals, or a text about China or others that expresses no view of the US |
+| 4 | Favourable: the US is portrayed positively (a constructive or credible partner, succeeding, cooperating) |
+| 5 | Very favourable: strong praise of the US or of cooperation with it |
+
+Output columns: `sentiment_scores.csv` has `relevant` and `sentiment_score`; `sentiment_monthly.csv` / `sentiment_final_monthly.csv` count **relevant articles only** (`articles_scored`, `mean_sentiment`, `share_negative` = scores 1-2, `share_positive` = scores 4-5; the dashboard labels the last two *Share unfavourable* and *Share favourable*). The review and arbitration passes judge relevance as well as the score: two "irrelevant" verdicts agree whatever the scores, otherwise relevance and score must both match.
+
+**Small models are stricter on relevance.** In a 30-article test on the first days of 2010, Qwen 4B judged 27 irrelevant and Qwen 9B 19; the 9B matched expectations on the examples checked (a mascot tour excluded, a story about US security failures and partisan disputes relevant and critical). Check a sample of excluded articles after the full run (`relevant == False` in `sentiment_scores.csv`) before trusting the exclusion rate.
+
+**Changing the scale means scoring everything again.** Every result carries a `prompt` version (`PROMPT_VERSION` in `sentiment_common.py`, currently `stance-v3`; results with no version come from the original "completely negative / completely positive" prompt, `attitude-v1`). The scoring, review and arbitration scripts refuse to resume on top of results from another version, because mixing scales would be meaningless. To rescore, move the old files aside first, then run the passes again:
+
+```bash
+mkdir -p data/processed/v1
+mv data/processed/sentiment_{scores,reviews,arbitrations,final,final_monthly}.* data/processed/sentiment_monthly.csv data/processed/v1/
+uv run python scripts/score_sentiment.py        # then review_sentiment.py, arbitrate_sentiment.py, weekly_aggregates.py, build_dashboard.py
+```
+
+If you edit the wording or a schema, bump `PROMPT_VERSION`. `sentiment_inputs.jsonl` (the excerpts) does not depend on the prompt and can stay.
+
 ## Scoring sentiment with a model server
 
-`scripts/score_sentiment.py` scores every USA-mentioning article (about 32.5k) from 1 (completely negative) to 5 (completely positive) with an OpenAI-compatible server such as the vLLM server from [Cloud GPU deployment](#cloud-gpu-deployment-scaleway). It uses the same prompt as the benchmark (`scripts/sentiment_common.py`) and sends each article's excerpt (from before the first to after the last mention), keeping many requests in flight so vLLM batches them.
+`scripts/score_sentiment.py` scores every USA-mentioning article (about 32.5k) from 1 (confrontation) to 5 (strong cooperation), see [The scoring scale](#the-scoring-scale), with an OpenAI-compatible server such as the vLLM server from [Cloud GPU deployment](#cloud-gpu-deployment-scaleway). It uses the same prompt as the benchmark (`scripts/sentiment_common.py`) and sends each article's excerpt (from before the first to after the last mention), keeping many requests in flight so vLLM batches them.
 
 ```bash
 uv run python scripts/score_sentiment.py --limit 20       # smoke test on 20 articles
@@ -302,7 +333,7 @@ uv run python scripts/score_sentiment.py --no-reason      # score only: fewer ou
 uv run python scripts/score_sentiment.py --summary-only   # just rebuild the CSVs from the scores so far
 ```
 
-It runs three stages, each skipped if its output exists: (1) build `data/processed/sentiment_inputs.jsonl` from the raw data (needs `download_data.py`; ~1.5 min); (2) score into `data/processed/sentiment_scores.jsonl`, appending as it goes; (3) write `data/processed/sentiment_scores.csv` (`article_id`, `date`, `sentiment_score`, `reason`) and `data/processed/sentiment_monthly.csv` (`month`, `articles_scored`, `mean_sentiment`, `share_negative` = scores 1-2, `share_positive` = scores 4-5). **It is resumable:** every result is written to disk as soon as it arrives, so if it stops for any reason (Ctrl-C, a dropped tunnel, a crash) you run the same command again and it continues with the unscored articles; failed articles are retried on the next run. Ctrl-C stops within a second, writes the CSVs for what is done so far, and exits with code 130. A line cut off by a hard kill is skipped on the next run.
+It runs three stages, each skipped if its output exists: (1) build `data/processed/sentiment_inputs.jsonl` from the raw data (needs `download_data.py`; ~1.5 min); (2) score into `data/processed/sentiment_scores.jsonl`, appending as it goes; (3) write `data/processed/sentiment_scores.csv` (`article_id`, `date`, `relevant`, `sentiment_score`, `reason`) and `data/processed/sentiment_monthly.csv` (`month`, `articles_scored`, `mean_sentiment`, `share_negative` = scores 1-2, `share_positive` = scores 4-5). **It is resumable:** every result is written to disk as soon as it arrives, so if it stops for any reason (Ctrl-C, a dropped tunnel, a crash) you run the same command again and it continues with the unscored articles; failed articles are retried on the next run. Ctrl-C stops within a second, writes the CSVs for what is done so far, and exits with code 130. A line cut off by a hard kill is skipped on the next run.
 
 Options: `--base-url` (default `http://127.0.0.1:8000/v1`), `--model` (default `qwen`, the vLLM `SERVED_MODEL_NAME`), `--api-key` (or `VLLM_API_KEY`), `--concurrency` (64), `--limit`, `--no-reason`, `--max-tokens`, `--timeout`, `--retries`, `--extra-body` (JSON merged into each request), `--context`, `--max-chars`, `--rebuild-inputs`, `--summary-only`, plus path options (`--raw-dir`, `--inputs`, `--out`, `--csv-out`, `--monthly-out`).
 
@@ -326,7 +357,7 @@ uv run python scripts/review_sentiment.py --only-extreme    # skip the neutral 3
 uv run python scripts/review_sentiment.py --summary-only    # rebuild the CSV and print the summary
 ```
 
-Outputs: `data/processed/sentiment_reviews.jsonl` (appended as it goes) and `data/processed/sentiment_reviews.csv` (`article_id`, `date`, `score`, `agree`, `revised_score`, `explanation`, `reason`). It prints the agreement rate, the agreement by original score, the direction of the disagreements and an original-by-revised score table. The review is a second opinion from a language model, not ground truth: it does not change `sentiment_scores.csv` or the dashboard.
+Outputs: `data/processed/sentiment_reviews.jsonl` (appended as it goes) and `data/processed/sentiment_reviews.csv` (`article_id`, `date`, `relevant`, `score`, `agree`, `revised_relevant`, `revised_score`, `explanation`, `reason`). It prints the agreement rate, the agreement by original score, the direction of the disagreements and an original-by-revised score table. The review is a second opinion from a language model, not ground truth: it does not change `sentiment_scores.csv` or the dashboard.
 
 **Use an independent reviewer if you can.** A model reviewing its own output tends to agree too readily or to be sceptical in a systematic way (in a 8-article test with Qwen 4B it disagreed almost every time and pulled scores towards 3). For a more independent check, serve a different or larger model (`MODEL=<hf id> SERVED_MODEL_NAME=reviewer deploy/serve_vllm.sh restart`) and pass `--base-url` and `--model reviewer`. Options match `score_sentiment.py` (`--base-url`, `--model`, `--concurrency`, `--limit`, `--max-tokens` (150), `--extra-body`, ...) plus `--only-extreme`, `--scores` and `--out`/`--csv-out`. The review costs about as much GPU time as the scoring pass, since the prompt is the same excerpt plus a short explanation.
 
@@ -340,7 +371,7 @@ uv run python scripts/arbitrate_sentiment.py                  # all disagreement
 uv run python scripts/arbitrate_sentiment.py --summary-only   # rebuild the CSVs only
 ```
 
-Outputs: `data/processed/sentiment_arbitrations.jsonl` (resumable), `data/processed/sentiment_final.csv` (every article: `first_score`, `reviewer_score`, `final_score`, `source` = `first_agreed` / `arbitrated` / `first_unreviewed`, `decision`, `arbiter_explanation`) and `data/processed/sentiment_final_monthly.csv`, which has the same columns as `sentiment_monthly.csv` but computed from the final scores. Run it only after `review_sentiment.py` has finished: articles not yet reviewed or arbitrated keep their first score (`first_unreviewed`), and the summary says how many disagreements are still pending. Options match the other clients (`--base-url`, `--model`, `--concurrency`, `--limit`, `--max-tokens`, `--extra-body`, `--reviews`, `--out`, `--csv-out`, `--monthly-out`).
+Outputs: `data/processed/sentiment_arbitrations.jsonl` (resumable), `data/processed/sentiment_final.csv` (every article: `first_relevant`, `first_score`, `reviewer_relevant`, `reviewer_score`, `final_relevant`, `final_score`, `source` = `first_agreed` / `arbitrated` / `first_unreviewed`, `decision`, `arbiter_explanation`) and `data/processed/sentiment_final_monthly.csv`, which has the same columns as `sentiment_monthly.csv` but computed from the final scores. Run it only after `review_sentiment.py` has finished: articles not yet reviewed or arbitrated keep their first score (`first_unreviewed`), and the summary says how many disagreements are still pending. Options match the other clients (`--base-url`, `--model`, `--concurrency`, `--limit`, `--max-tokens`, `--extra-body`, `--reviews`, `--out`, `--csv-out`, `--monthly-out`).
 
 The pipeline is therefore: `score_sentiment.py` -> `review_sentiment.py` -> `arbitrate_sentiment.py`. Using a different model for each pass gives the most independent result; the arbiter is still a language model, not ground truth. The dashboard still reads `sentiment_monthly.csv` (first-pass scores); use `build_dashboard.py --sentiment data/processed/sentiment_final_monthly.csv` to show the final scores.
 
